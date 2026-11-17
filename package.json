@@ -26,8 +26,8 @@
     "sandbox:build": "node scripts/build-sandbox.mjs",
     "format": "prettier --write src scripts docs evaluation examples .github *.json *.md",
     "format:check": "prettier --check src scripts docs evaluation examples .github *.json *.md",
-    "pack": "npm run build && node scripts/check-package.mjs && electron-builder --win dir --x64 && node scripts/check-artifact.mjs",
-    "dist:win": "npm run build && node scripts/check-package.mjs && electron-builder --win nsis zip --x64 && node scripts/check-artifact.mjs",
+    "pack": "npm run build && node scripts/check-package.mjs && electron-builder --win dir --x64 --publish never && node scripts/check-artifact.mjs",
+    "dist:win": "npm run build && node scripts/check-package.mjs && electron-builder --win nsis zip --x64 --publish never && node scripts/check-artifact.mjs",
     "eval": "npm run build && node scripts/evaluate.mjs"
   },
   "dependencies": {
