@@ -1,0 +1,16 @@
+node_modules/
+dist/
+release/
+coverage/
+.cache/
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite*
+*.db*
+secrets.bin*
+config.local.json
+test-results/
+playwright-report/
+*.tsbuildinfo

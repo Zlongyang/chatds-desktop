@@ -1,0 +1,83 @@
+{
+  "name": "chatds-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first companion with controlled tools and pluggable messaging channels",
+  "license": "GPL-3.0-only",
+  "author": "ChatDS contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Zlongyang/chatds-desktop.git"
+  },
+  "type": "module",
+  "main": "dist/desktop/main.js",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "build": "tsc -p tsconfig.json && node scripts/assets.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "test:parity": "npm run build && node scripts/parity.mjs",
+    "test:smoke": "npm run build && node scripts/smoke.mjs",
+    "test:soak": "npm run build && node --expose-gc scripts/soak.mjs",
+    "sandbox:build": "node scripts/build-sandbox.mjs",
+    "format": "prettier --write src scripts docs evaluation examples .github *.json *.md",
+    "format:check": "prettier --check src scripts docs evaluation examples .github *.json *.md",
+    "pack": "npm run build && node scripts/check-package.mjs && electron-builder --win dir --x64 && node scripts/check-artifact.mjs",
+    "dist:win": "npm run build && node scripts/check-package.mjs && electron-builder --win nsis zip --x64 && node scripts/check-artifact.mjs",
+    "eval": "npm run build && node scripts/evaluate.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "ipaddr.js": "2.5.0",
+    "ws": "8.21.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.1",
+    "electron": "45.3.3",
+    "electron-builder": "26.18.0",
+    "prettier": "3.10.1",
+    "typescript": "7.0.2"
+  },
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "11.0.9"
+  },
+  "build": {
+    "appId": "org.chatds.desktop",
+    "productName": "ChatDS",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/test/**/*",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "dist/assets/icon.ico",
+      "signExecutable": false,
+      "executableName": "ChatDS"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "artifactName": "ChatDS-${version}-${arch}.${ext}"
+  }
+}

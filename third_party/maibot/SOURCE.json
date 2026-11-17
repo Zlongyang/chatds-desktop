@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/Mai-with-u/MaiBot",
+  "commit": "478f671e64467121fd3e39205c8d3507b5ce0bd6",
+  "path": "src/chat/debounce/controller.py",
+  "canonicalUtf8LfSha256": "984f0487dfdef3fe9779f63269bbcdeab191d8cb181a813743e468647552237f",
+  "license": "GPL-3.0-only",
+  "portedTo": "src/runtime/debounce.ts",
+  "preReuseValidation": {
+    "date": "2026-11-17",
+    "python": "3.12.13",
+    "componentCasesPassed": 17,
+    "randomMessageStreams": 3000,
+    "observations": 120000,
+    "windowsJobLifecycleCycles": 100,
+    "scope": "Isolated original debounce and Windows Job components, not the complete MaiBot suite. Windows Job code is not part of this distribution."
+  }
+}

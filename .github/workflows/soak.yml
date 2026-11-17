@@ -1,0 +1,22 @@
+name: Optional eight-hour soak
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paced-soak:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 540
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node --expose-gc scripts/soak.mjs --duration-ms=28800000
+      - uses: actions/upload-artifact@v6
+        with:
+          name: paced-soak-result
+          path: test-results/soak.json

@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-17",
+  "node": "v24.16.0",
+  "coreTests": {
+    "passed": 41,
+    "failed": 0
+  },
+  "upstreamParity": {
+    "streams": 3000,
+    "observations": 120000,
+    "commit": "478f671e64467121fd3e39205c8d3507b5ce0bd6"
+  },
+  "electronSmoke": {
+    "development": true,
+    "packaged": true,
+    "messages": 4,
+    "memories": 1,
+    "pages": 6,
+    "rendererNodeIntegration": false,
+    "model": "scripted fixture"
+  },
+  "soak": {
+    "messages": 10000,
+    "modelCalls": 2500,
+    "logicalHours": 8,
+    "wallTimeMs": 14465,
+    "peakRssBytes": 87224320,
+    "runtimeStateReleased": true,
+    "model": "scripted fixture",
+    "clock": "accelerated"
+  },
+  "audit": {
+    "knownVulnerabilities": 0,
+    "registry": "https://registry.npmjs.org"
+  },
+  "artifactScan": {
+    "passed": true,
+    "files": 9206
+  },
+  "artifacts": {
+    "ChatDS-0.1.0-x64.exe": {
+      "bytes": 127236281,
+      "sha256": "f236fe68e92d251130e3222b421a65d4a62ba3896082b083864237eedb27127d"
+    },
+    "ChatDS-0.1.0-x64.zip": {
+      "bytes": 163081666,
+      "sha256": "8549a01e8abf66945106c9635593c050298bf576cd247a20da8f637574242abc"
+    }
+  },
+  "notLocallyVerified": [
+    "real QQ delivery",
+    "real Docker engine isolation",
+    "eight-hour wall-clock stability",
+    "30-case real-model blind review",
+    "clean-machine installer lifecycle"
+  ],
+  "ciStatus": "Workflows provided; this report describes local checks, not a completed remote CI run."
+}
