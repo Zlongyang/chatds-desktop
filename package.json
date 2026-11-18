@@ -1,6 +1,6 @@
 {
   "name": "chatds-desktop",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "private": true,
   "description": "A local-first companion with controlled tools and pluggable messaging channels",
   "license": "GPL-3.0-only",
