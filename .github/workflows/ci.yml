@@ -46,6 +46,9 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - run: node scripts/smoke.mjs --packaged
+      - name: Install on fresh Windows, configure the model, chat and uninstall
+        shell: pwsh
+        run: ./scripts/test-installed.ps1
       - uses: actions/upload-artifact@v6
         with:
           name: ChatDS-Windows-x64
@@ -71,3 +74,36 @@ jobs:
         with:
           name: sandbox-result
           path: test-results/sandbox-*.json
+  prerelease:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-beta.')
+    needs: [core, desktop, sandbox]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v6
+        with:
+          name: ChatDS-Windows-x64
+          path: artifacts
+      - name: Publish tested Windows binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          [[ "$TAG" == "v$version" && "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
+          cd artifacts/release
+          installer="ChatDS-$version-x64.exe"
+          archive="ChatDS-$version-x64.zip"
+          sha256sum "$installer" "$archive" > SHA256SUMS.txt
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || true)
+          if [[ "$draft" == "false" ]]; then exit 0; fi
+          if [[ "$draft" != "true" ]]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease \
+              --title "ChatDS Desktop $version" --notes-file "$GITHUB_WORKSPACE/docs/beta-notes.md"
+          fi
+          gh release upload "$TAG" "$installer" "$archive" SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

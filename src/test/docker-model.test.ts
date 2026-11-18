@@ -128,10 +128,10 @@ test('model credentials are bound to endpoint identity and redirects are refused
     /API Key/,
   );
 });
-function frame(text: string) {
+function frame(text: string, stream = 1) {
   const b = Buffer.from(text),
     header = Buffer.alloc(8);
-  header[0] = 1;
+  header[0] = stream;
   header.writeUInt32BE(b.length, 4);
   return Buffer.concat([header, b]);
 }
@@ -162,9 +162,19 @@ test('Docker jobs use isolated anonymous volumes, fixed image ID, quotas, and gu
     } else if (req.method === 'PUT') {
       inputs = unpackTar(body, 8 * 1024 * 1024).map((f) => f.name);
       res.end();
-    } else if (url.includes('/wait')) res.end(JSON.stringify({ StatusCode: 0 }));
-    else if (url.includes('/logs')) res.end(frame('完成'));
-    else if (req.method === 'DELETE') {
+    } else if (url.includes('/wait'))
+      res.end(JSON.stringify({ StatusCode: spec.Cmd[0] === 'python3' ? 5 : 0 }));
+    else if (url.includes('/logs'))
+      res.end(spec.Cmd[0] === 'python3' ? frame('脚本错误', 2) : frame('完成'));
+    else if (
+      req.method === 'GET' &&
+      url === '/containers/' + 'a'.repeat(64) + '/archive?path=%2Fworkspace%2Fanswer.txt'
+    )
+      res.end(packTar([{ name: 'answer.txt', data: Buffer.from('abc') }]));
+    else if (req.method === 'GET' && url.includes('/archive?')) {
+      res.statusCode = 404;
+      res.end(JSON.stringify({ message: 'File not found' }));
+    } else if (req.method === 'DELETE') {
       removed++;
       res.end();
     } else res.end();
@@ -181,10 +191,19 @@ test('Docker jobs use isolated anonymous volumes, fixed image ID, quotas, and gu
   assert.equal((await sandbox.check()).available, true);
   const result = (await sandbox.execute(
     join(directory, 'workspace'),
-    { language: 'javascript', code: 'console.log(1)' },
+    { language: 'javascript', code: 'console.log(1)', outputs: ['answer.txt'] },
     new AbortController().signal,
-  )) as { stdout: string };
+  )) as { stdout: string; outputs: unknown[] };
   assert.equal(result.stdout, '完成');
+  assert.deepEqual(result.outputs, [
+    {
+      path: 'answer.txt',
+      text: 'abc',
+      bytes: 3,
+      sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    },
+  ]);
+  assert.deepEqual(spec.Cmd, ['node', '--disable-proto=throw', '--eval', 'console.log(1)']);
   assert.deepEqual(inputs, ['input.txt']);
   assert.equal(removed, 1);
   assert.equal(sandbox.stats.containers, 0);
@@ -196,6 +215,25 @@ test('Docker jobs use isolated anonymous volumes, fixed image ID, quotas, and gu
   assert.equal(spec.HostConfig.Mounts[0].Type, 'volume');
   assert.equal(spec.HostConfig.Binds, undefined);
   assert.ok(!JSON.stringify(spec.Env).match(/key|token|secret/i));
+  const failure = (await sandbox.execute(
+    join(directory, 'workspace'),
+    { language: 'python', code: 'raise SystemExit(5)' },
+    new AbortController().signal,
+  )) as { stdout: string; stderr: string; exitCode: number };
+  assert.deepEqual(spec.Cmd, ['python3', '-I', '-c', 'raise SystemExit(5)']);
+  assert.equal(failure.exitCode, 5);
+  assert.equal(failure.stdout, '');
+  assert.equal(failure.stderr, '脚本错误');
+  await assert.rejects(
+    sandbox.execute(
+      join(directory, 'workspace'),
+      { language: 'javascript', code: '', outputs: ['missing.txt'] },
+      new AbortController().signal,
+    ),
+    /HTTP 404/,
+  );
+  assert.equal(removed, 3);
+  assert.equal(sandbox.stats.containers, 0);
 });
 test('Docker cancellation also removes a container whose wait request was interrupted', async (t) => {
   const directory = temporary();
@@ -215,6 +253,10 @@ test('Docker cancellation also removes a container whose wait request was interr
         }),
       );
     else if (url.startsWith('/containers/create')) res.end(JSON.stringify({ Id: 'b'.repeat(64) }));
+    else if (url.startsWith('/containers/json?'))
+      res.end(
+        JSON.stringify([...(removed ? [] : [{ Id: 'b'.repeat(64) }]), { Id: 'c'.repeat(64) }]),
+      );
     else if (url.includes('/wait')) {
       waiting = true;
       req.on('close', () => res.destroy());
@@ -244,10 +286,16 @@ test('Docker cancellation also removes a container whose wait request was interr
       controller.signal,
     );
   await until(() => waiting);
+  assert.equal((await sandbox.check()).available, true);
+  await sandbox.reap();
+  assert.equal(removed, 0, 'checking the environment must preserve the executing job');
+  assert.equal(sandbox.stats.containers, 1);
   controller.abort();
   await assert.rejects(run);
   assert.equal(removed, 1);
   assert.equal(sandbox.stats.containers, 0);
+  await sandbox.reap();
+  assert.equal(removed, 2, 'the next idle check reclaims abandoned containers');
 });
 test('archive decoder rejects traversal, symlinks, corrupt sizes and checksum changes', () => {
   const tar = packTar([{ name: 'answer.txt', data: Buffer.from('safe') }]);

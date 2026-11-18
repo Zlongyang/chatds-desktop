@@ -32,8 +32,9 @@ export interface MessageEnvelope {
   isGroup: boolean;
   trigger: Trigger;
   replyTo?: string;
-  quoted?: { actorId: string; text: string };
+  quoted?: { actorId: string; text: string; displayName?: string };
   mention: boolean;
+  directedElsewhere?: boolean;
 }
 export interface ConversationSettings {
   mode: ConversationMode;
@@ -55,6 +56,7 @@ export interface AppConfig {
   revision: number;
   enabled: boolean;
   persona: string;
+  personaLibrary?: { active: string; cards: PersonaCard[] };
   model: ModelProfile;
   onebot: {
     enabled: boolean;
@@ -79,6 +81,13 @@ export interface AppConfig {
     ambientTokenBudget: number;
   };
   sandbox: { image: string; timeoutMs: number; memoryMb: number; cpus: number; pids: number };
+}
+export interface PersonaCard {
+  id: string;
+  name: string;
+  description: string;
+  personality: string;
+  examples: string;
 }
 export interface RunContext {
   id: string;
@@ -127,6 +136,11 @@ export interface ConversationRow {
   error?: string;
   settings: ConversationSettings;
 }
+export interface WebReadReceipt {
+  host: string;
+  status: 'read' | 'failed';
+  reason?: string;
+}
 export interface ChatMessage {
   id: string;
   conversationId: string;
@@ -137,6 +151,7 @@ export interface ChatMessage {
   timestamp: number;
   replyTo?: string;
   status?: 'pending' | 'sent' | 'unknown' | 'failed';
+  webReads?: WebReadReceipt[];
 }
 export interface Approval {
   id: string;
@@ -168,6 +183,8 @@ export interface RuntimeEvent {
 export interface AppSnapshot {
   config: AppConfig;
   keyConfigured: boolean;
+  modelVerified: boolean;
+  napcatInstallation: { directory: string; canLaunch: boolean; available: boolean } | null;
   onebotTokenConfigured: boolean;
   vaultAvailable: boolean;
   connection: string;
@@ -179,21 +196,33 @@ export interface AppSnapshot {
   usage: { input: number; output: number; ambient: number; background: number };
   sandbox: { available: boolean; reason?: string };
   testMode: boolean;
-  friendRequests: { id: string; qq: string; comment: string }[];
+  friendRequests: { id: string; qq: string; comment: string; uncertain?: boolean }[];
   loginStartup: boolean;
 }
 export interface SettingsChange {
-  config?: Partial<Omit<AppConfig, 'version' | 'revision'>>;
+  config?: Partial<Omit<AppConfig, 'version' | 'revision' | 'tools'>> & {
+    tools?: Partial<AppConfig['tools']>;
+  };
   apiKey?: string;
   clearApiKey?: boolean;
   onebotToken?: string;
   clearOnebotToken?: boolean;
 }
+export interface NapCatLoginStatus {
+  phase: 'waiting' | 'scanned' | 'initializing' | 'ready' | 'expired';
+  qr?: string;
+  botQQ?: string;
+  detail?: string;
+}
 export interface ChatDSApi {
   state(): Promise<AppSnapshot>;
   configure(change: SettingsChange): Promise<AppSnapshot>;
   chat(text: string): Promise<void>;
-  history(conversationId: string, before?: number): Promise<ChatMessage[]>;
+  history(
+    conversationId: string,
+    before?: number,
+    limit?: number,
+  ): Promise<(ChatMessage & { seq: number })[]>;
   conversation(id: string, settings: Partial<ConversationSettings>): Promise<void>;
   stop(conversationId?: string): Promise<void>;
   memories(scope?: string): Promise<MemoryFact[]>;
@@ -201,8 +230,18 @@ export interface ChatDSApi {
   approve(id: string, allow: boolean): Promise<void>;
   approveFriend(id: string): Promise<void>;
   modelTest(): Promise<{ ok: boolean; detail: string }>;
+  testAndSaveModel(profile: ModelProfile, apiKey?: string): Promise<AppSnapshot>;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  napcatBegin(session: string, link?: string): Promise<NapCatLoginStatus | null>;
+  napcatChooseInstallation(): Promise<AppSnapshot['napcatInstallation']>;
+  napcatForgetInstallation(): Promise<void>;
+  napcatLaunch(): Promise<void>;
+  napcatCheck(): Promise<{ online: boolean; detail: string }>;
+  napcatPoll(session: string, renew?: boolean): Promise<NapCatLoginStatus>;
+  napcatBind(session: string, ownerQQ: string): Promise<void>;
+  napcatCancel(session: string): Promise<void>;
+  napcatGuide(): Promise<void>;
   sandboxCheck(): Promise<{ available: boolean; reason?: string }>;
   chooseSkill(): Promise<void>;
   removeSkill(id: string): Promise<void>;

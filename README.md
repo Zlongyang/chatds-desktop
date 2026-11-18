@@ -1,16 +1,16 @@
 # ChatDS Desktop
 
-一个在本机运行的 Windows 聊天伙伴。默认纯陪伴；需要办事时，手动为当前会话切换到受控助理。支持桌面聊天与外部 OneBot v11 服务，NapCat 由用户自行安装、登录。
+一个在本机运行的 Windows 聊天伙伴。默认纯陪伴，需要办事时可以为当前会话切换到受控助理。支持桌面聊天，也可以连接自己安装的 NapCat，在 ChatDS 内扫码登录 QQ。
 
 项目正在验证首个版本。运行机制与权限边界有自动化测试；聊天是否自然仍需要真实模型的多轮评测。
 
 ## 开始使用
 
-从本仓库的 GitHub Actions → `Checks and Windows build` → `ChatDS-Windows-x64` 下载构建产物；本机构建的安装程序在 `release/`。安装版与 ZIP 版使用同一份 `%APPDATA%\ChatDS` 数据。首次发布包未做 Windows 代码签名。
+Windows x64 用户可在发布页选择测试版，下载安装程序 `.exe`，或解压 `.zip` 后运行 `ChatDS.exe`。同页提供 SHA-256 校验和。安装版与 ZIP 版使用同一份 `%APPDATA%\ChatDS` 数据。测试版未做 Windows 代码签名。[GitHub Releases](https://github.com/Zlongyang/chatds-desktop/releases)
 
-1. 打开「设置」，填入模型名称、接口地址、上下文窗口与 API Key，保存后测试连接。兼容 OpenAI Chat Completions 的接口需要支持工具调用；本地模型可取消「接口需要 API Key」。
+1. 打开「环境配置」。选择 DeepSeek 时，填入 API Key，点「测试通过后保存」。本机模型和其他 OpenAI 兼容服务可填写各自的接口地址与模型名称。
 2. 直接在「聊天」里聊天。无需先配置 QQ 或 Docker。
-3. 要接入 QQ，按 [连接说明](docs/configuration.md) 配置你自己安装的 OneBot v11 服务。在「连接」中填写地址、Access Token、机器人 QQ 和你的主号 QQ。
+3. 要在 QQ 聊天，打开「环境配置 → 配置 NapCat（可选）→ 选择安装目录」，关联你自己安装的 NapCat。启动 NapCat，检查 WebUI，再点「扫码登录 QQ」。已有登录会直接识别机器人账号。其他 OneBot 服务可在同页手动接入。[连接说明](docs/configuration.md)
 4. 其他私聊对象与群必须加入白名单。群内「无需 @，允许适时插话」默认关闭，按群开启。
 
 密钥由 Electron `safeStorage` 使用 Windows 加密能力保护，界面不会回读明文。更换模型接口地址需要为新地址保存密钥。人设、技能、聊天内容无法修改实际权限。

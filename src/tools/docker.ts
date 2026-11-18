@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { readdir, readFile, lstat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { AppConfig } from '../shared/types.js';
 import { checkAbort, digest } from '../shared/util.js';
 import { packTar, safeArchiveName, unpackTar } from './archive.js';
@@ -150,6 +150,7 @@ export function decodeDockerLogs(buffer: Buffer): { stdout: string; stderr: stri
 }
 export class DockerSandbox {
   private owned = new Set<string>();
+  private runningJobs = 0;
   private imageId?: string;
   state: { available: boolean; reason?: string } = { available: false, reason: '尚未检查 Docker' };
   readonly owner: string;
@@ -190,6 +191,7 @@ export class DockerSandbox {
   }
   async reap(): Promise<void> {
     try {
+      if (this.runningJobs) return;
       const rows = await this.api.json<{ Id: string }[]>(
         'GET',
         '/containers/json?all=1&filters=' +
@@ -199,6 +201,8 @@ export class DockerSandbox {
         undefined,
         AbortSignal.timeout(3000),
       );
+      // A create request may already have reached Docker before its ID comes back to this process.
+      if (this.runningJobs) return;
       for (const r of rows) {
         this.owned.add(r.Id);
         await this.remove(r.Id);
@@ -250,6 +254,7 @@ export class DockerSandbox {
     const limits = this.config(),
       scope = AbortSignal.any([signal, AbortSignal.timeout(limits.timeoutMs)]);
     let container: string | undefined;
+    this.runningJobs++;
     try {
       const inputs = await this.snapshot(directory);
       checkAbort(scope);
@@ -301,7 +306,7 @@ export class DockerSandbox {
           path: file,
           text: data.includes(0) ? undefined : data.toString('utf8').slice(0, 30000),
           bytes: data.length,
-          sha256: digest(data.toString('base64')),
+          sha256: createHash('sha256').update(data).digest('hex'),
         });
       }
       return {
@@ -311,7 +316,11 @@ export class DockerSandbox {
         note: '沙箱文件为临时副本；写回工作区仍需 write_file 确认。',
       };
     } finally {
-      if (container && this.owned.has(container)) await this.remove(container);
+      try {
+        if (container && this.owned.has(container)) await this.remove(container);
+      } finally {
+        this.runningJobs--;
+      }
     }
   }
   private async remove(container: string): Promise<void> {

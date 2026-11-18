@@ -16,30 +16,35 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { appendFile, stat, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { ConfigStore } from './config-store.js';
 import { Vault } from './vault.js';
 import { ModelHost, keyReference } from './model.js';
 import { TestModelHost } from './test-model.js';
+import { NapCatSession } from './napcat.js';
+import { NapCatInstallation } from './napcat-installation.js';
+import { locationFromFolder, locationFromLink } from './napcat-location.js';
+import { ModelVerification, probeModel } from './model-verification.js';
 import { RpcPeer } from '../shared/rpc.js';
-import { boundText, id, atomicJson, readJson, checkAbort, stableDay } from '../shared/util.js';
+import { boundText, id } from '../shared/util.js';
+import { FriendRequests } from './friend-requests.js';
 import {
-  configSchema,
   conversationSchema,
   errorText,
+  modelSchema,
   validateConversationId,
 } from '../shared/config.js';
 import type {
   Activity,
   AppSnapshot,
-  ChatMessage,
   MessageEnvelope,
   RuntimeEvent,
   SettingsChange,
   ToolId,
 } from '../shared/types.js';
-import type { TranscriptContext } from '@earendil-works/pi-ai';
 import { OneBot } from '../connectors/onebot.js';
+import { conversationsToStop } from '../runtime/policy.js';
 import { SkillRegistry } from '../tools/skills.js';
 import { DockerSandbox } from '../tools/docker.js';
 import { ToolBroker } from '../tools/broker.js';
@@ -60,6 +65,11 @@ else
     .whenReady()
     .then(start)
     .catch((error) => {
+      if (isTest && process.env.CHATDS_SMOKE_REPORT) {
+        console.error('ChatDS smoke check:', errorText(error));
+        app.exit(1);
+        return;
+      }
       dialog.showErrorBox('ChatDS 启动失败', errorText(error));
       app.quit();
     });
@@ -75,6 +85,17 @@ async function start(): Promise<void> {
     config.value.model.model = 'fixture';
   }
   const vault = new Vault(directory, safeStorage);
+  const verification = new ModelVerification(directory);
+  const installation = new NapCatInstallation(directory);
+  let napcatInstall = await installation.state();
+  const installationView = (): AppSnapshot['napcatInstallation'] =>
+    napcatInstall.directory
+      ? {
+          directory: napcatInstall.directory,
+          canLaunch: napcatInstall.canStart,
+          available: napcatInstall.canStart || napcatInstall.hasWebUIConfig,
+        }
+      : null;
   const onebot = new OneBot(
     () => config.value.onebot,
     () => vault.get('onebot'),
@@ -248,21 +269,19 @@ async function start(): Promise<void> {
         await accept(message);
       })().catch((e) => log(errorText(e))),
   );
-  type Friend = { id: string; qq: string; comment: string; flag: string; handled: boolean };
-  const requestsFile = join(directory, 'friend-requests.json');
-  const friends = readJson<Friend[]>(requestsFile, []);
+  const friends = new FriendRequests(join(directory, 'friend-requests.json'), () =>
+    onebot.status === 'online' && onebot.account === config.value.onebot.botQQ
+      ? onebot.account
+      : undefined,
+  );
   onebot.on('request', (raw) => {
-    if (raw.request_type !== 'friend' || String(raw.self_id) !== config.value.onebot.botQQ) return;
-    if (friends.some((f) => f.flag === String(raw.flag))) return;
-    friends.push({
-      id: id(),
-      qq: String(raw.user_id),
-      comment: String(raw.comment ?? '').slice(0, 500),
-      flag: String(raw.flag),
-      handled: false,
-    });
-    if (friends.length > 100) friends.splice(0, friends.length - 100);
-    atomicJson(requestsFile, friends);
+    if (raw.request_type !== 'friend') return;
+    friends.receive(
+      String(raw.self_id),
+      String(raw.user_id),
+      String(raw.flag ?? ''),
+      String(raw.comment ?? ''),
+    );
     notify();
   });
   const snapshot = async (): Promise<AppSnapshot> => {
@@ -274,6 +293,8 @@ async function start(): Promise<void> {
     return {
       config: structuredClone(config.value),
       keyConfigured: !!vault.get(keyReference(config.value.model)),
+      modelVerified: verification.verified(config.value.model),
+      napcatInstallation: installationView(),
       onebotTokenConfigured: !!vault.get('onebot'),
       vaultAvailable: vault.available,
       connection: onebot.status,
@@ -285,12 +306,88 @@ async function start(): Promise<void> {
       activities: activities.slice(-100),
       sandbox: { ...sandbox.state },
       testMode: isTest,
-      friendRequests: friends
-        .filter((f) => !f.handled)
-        .map(({ id, qq, comment }) => ({ id, qq, comment })),
+      friendRequests: friends.list(),
       loginStartup: app.getLoginItemSettings().openAtLogin,
     };
   };
+  async function confirmOwner(previous: string, owner: string) {
+    if (previous && previous !== owner) {
+      const answer = await dialog.showMessageBox(win!, {
+        type: 'question',
+        message: '更换主号 QQ？',
+        detail: '新的主号会与桌面使用同一份个人记忆和工作区。请确认这个账号属于你本人。',
+        buttons: ['取消', '确认更换'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (answer.response !== 1) throw new Error('已取消更换主号');
+    }
+  }
+  const applySettings = async (change: SettingsChange, confirmedOwner?: string) => {
+    const before = structuredClone(config.value),
+      next = change.config ? config.preview(change.config) : config.value;
+    if (next.onebot.ownerQQ !== before.onebot.ownerQQ && confirmedOwner !== before.onebot.ownerQQ) {
+      await confirmOwner(before.onebot.ownerQQ, next.onebot.ownerQQ);
+      if (config.value.revision !== before.revision) throw new Error('设置已更新，请重新保存。');
+    }
+    if (before.onebot.url !== next.onebot.url && !change.onebotToken?.trim() && vault.get('onebot'))
+      throw new Error('连接地址已更换，请输入新地址的 Access Token。');
+    const secrets: Record<string, string | undefined> = {};
+    if (change.apiKey?.trim() || change.clearApiKey)
+      secrets[keyReference(next.model)] = change.clearApiKey ? undefined : change.apiKey!.trim();
+    if (change.onebotToken?.trim() || change.clearOnebotToken)
+      secrets.onebot = change.clearOnebotToken ? undefined : change.onebotToken!.trim();
+    for (const [reference, value] of Object.entries(secrets)) {
+      if (value === vault.get(reference)) delete secrets[reference];
+    }
+    const configChanged = !isDeepStrictEqual(before, { ...next, revision: before.revision });
+    if (!configChanged && Object.keys(secrets).length === 0) return;
+    if (!isDeepStrictEqual(before.model, next.model) || keyReference(next.model) in secrets)
+      verification.invalidate();
+    if (Object.keys(secrets).length) vault.setMany(secrets);
+    if (configChanged) config.commit(next);
+    const affected = conversationsToStop(before, next);
+    if (affected === 'all' || Object.keys(secrets).length) broker.permissionsChanged();
+    else for (const room of affected) broker.cancel(room);
+    await peer.call('configure', config.value);
+    if (
+      (['enabled', 'url', 'botQQ', 'ownerQQ'] as const).some(
+        (k) => before.onebot[k] !== next.onebot[k],
+      ) ||
+      Object.hasOwn(secrets, 'onebot')
+    ) {
+      onebot.stop();
+      if (config.value.onebot.enabled && !isTest) onebot.start();
+    }
+    notify();
+  };
+  let pairing:
+    | { id: string; client?: NapCatSession; botQQ?: string; busy: boolean; expiry?: NodeJS.Timeout }
+    | undefined;
+  function closePairing() {
+    clearTimeout(pairing?.expiry);
+    pairing?.client?.close();
+    pairing = undefined;
+  }
+  function activePairing(key: unknown) {
+    if (!pairing?.client || pairing.id !== key) throw new Error('本次扫码已结束，请重新开始。');
+    return { slot: pairing, client: pairing.client };
+  }
+  let sandboxProbe: Promise<typeof sandbox.state> | undefined;
+  function checkSandbox() {
+    sandboxProbe ??= sandbox
+      .check()
+      .then(async (result) => {
+        if (result.available) await sandbox.reap();
+        return result;
+      })
+      .finally(() => {
+        sandboxProbe = undefined;
+        notify();
+      });
+    return sandboxProbe;
+  }
+  if (config.value.tools.sandbox_exec) void checkSandbox();
   const handlers: Record<string, (...args: any[]) => unknown | Promise<unknown>> = {
     state: () => snapshot(),
     configure: async (input: unknown) => {
@@ -304,38 +401,142 @@ async function start(): Promise<void> {
         })
         .strict()
         .parse(input) as SettingsChange;
-      const before = structuredClone(config.value),
-        next = change.config ? config.preview(change.config) : config.value;
-      if (before.onebot.ownerQQ && next.onebot.ownerQQ !== before.onebot.ownerQQ) {
-        const answer = await dialog.showMessageBox(win!, {
-          type: 'question',
-          message: '更换主号 QQ？',
-          detail: '新的主号会与桌面使用同一份个人记忆和工作区。请确认这个账号属于你本人。',
-          buttons: ['取消', '确认更换'],
-          defaultId: 0,
-          cancelId: 0,
-        });
-        if (answer.response !== 1) throw new Error('已取消更换主号');
-      }
-      const secrets: Record<string, string | undefined> = {};
-      if (change.apiKey?.trim() || change.clearApiKey)
-        secrets[keyReference(next.model)] = change.clearApiKey ? undefined : change.apiKey!.trim();
-      if (change.onebotToken?.trim() || change.clearOnebotToken)
-        secrets.onebot = change.clearOnebotToken ? undefined : change.onebotToken!.trim();
-      if (Object.keys(secrets).length) vault.setMany(secrets);
-      if (change.config) config.commit(next);
-      broker.permissionsChanged();
-      await peer.call('configure', config.value);
-      if (
-        JSON.stringify(before.onebot) !== JSON.stringify(config.value.onebot) ||
-        change.onebotToken !== undefined ||
-        change.clearOnebotToken
-      ) {
-        onebot.stop();
-        if (config.value.onebot.enabled && !isTest) onebot.start();
-      }
-      notify();
+      await applySettings(change);
       return snapshot();
+    },
+    napcatGuide: () => shell.openExternal('https://doc.napneko.icu/guide/boot/Shell'),
+    napcatChooseInstallation: async () => {
+      const chosen = await dialog.showOpenDialog(win!, {
+        title: '选择本机 NapCat 安装目录',
+        properties: ['openDirectory'],
+        ...(napcatInstall.directory ? { defaultPath: napcatInstall.directory } : {}),
+      });
+      if (chosen.canceled) return null;
+      napcatInstall = await installation.select(chosen.filePaths[0]!);
+      closePairing();
+      notify();
+      return installationView();
+    },
+    napcatForgetInstallation: async () => {
+      napcatInstall = await installation.clear();
+      closePairing();
+      notify();
+    },
+    napcatLaunch: async () => {
+      napcatInstall = await installation.start();
+      notify();
+    },
+    napcatCheck: async () => {
+      napcatInstall = await installation.state();
+      notify();
+      if (!napcatInstall.directory) return { online: false, detail: '请先选择 NapCat 安装目录。' };
+      let client: NapCatSession | undefined;
+      try {
+        const location = await locationFromFolder(napcatInstall.directory);
+        client = new NapCatSession(location.origin, location.token);
+        await client.checkWebUI();
+        return { online: true, detail: 'WebUI 已连接。可以继续登录 QQ。' };
+      } catch (error) {
+        return { online: false, detail: errorText(error) };
+      } finally {
+        client?.close();
+      }
+    },
+    napcatBegin: async (key: unknown, link?: unknown) => {
+      const sessionId = z.string().uuid().parse(key);
+      closePairing();
+      const slot: NonNullable<typeof pairing> = { id: sessionId, busy: true };
+      pairing = slot;
+      try {
+        let location;
+        if (link === undefined) {
+          let folder = napcatInstall.directory;
+          if (!folder) {
+            const picked = await dialog.showOpenDialog(win!, {
+              title: '选择已启动的 NapCat 目录',
+              properties: ['openDirectory'],
+            });
+            if (picked.canceled) {
+              if (pairing === slot) closePairing();
+              return null;
+            }
+            folder = picked.filePaths[0]!;
+          }
+          location = await locationFromFolder(folder);
+        } else location = locationFromLink(link);
+        if (pairing !== slot) throw new Error('本次扫码已取消。');
+        slot.client = new NapCatSession(location.origin, location.token);
+        slot.expiry = setTimeout(closePairing, 10 * 60 * 1000);
+        slot.expiry.unref();
+        const status = await slot.client.status();
+        slot.botQQ = status.botQQ;
+        return status;
+      } catch (error) {
+        if (pairing === slot) closePairing();
+        throw error;
+      } finally {
+        slot.busy = false;
+      }
+    },
+    napcatPoll: async (key: unknown, renew = false) => {
+      const { slot, client } = activePairing(key);
+      if (slot.busy) throw new Error('正在读取登录状态，请稍候。');
+      slot.busy = true;
+      try {
+        const status = await (renew === true ? client.refresh() : client.status());
+        slot.botQQ = status.botQQ;
+        return status;
+      } finally {
+        slot.busy = false;
+      }
+    },
+    napcatCancel: (key: unknown) => {
+      if (pairing?.id === key) closePairing();
+    },
+    napcatBind: async (key: unknown, value: unknown) => {
+      const { slot, client } = activePairing(key);
+      if (slot.busy) throw new Error('正在处理扫码登录，请稍候。');
+      const owner = z
+        .string()
+        .regex(/^\d{5,12}$/, '请填写自己的 QQ 号。')
+        .parse(value);
+      if (!slot.botQQ) throw new Error('请先完成扫码登录。');
+      if (slot.botQQ === owner) throw new Error('请填写与你的机器人账号不同的个人 QQ 号。');
+      if (!vault.available) throw new Error('无法加密保存连接令牌，请检查本机凭据库。');
+      slot.busy = true;
+      try {
+        const before = JSON.stringify(config.value.onebot),
+          previousOwner = config.value.onebot.ownerQQ;
+        const check = () => {
+          if (pairing !== slot || before !== JSON.stringify(config.value.onebot))
+            throw new Error('连接设置已变化，请重新扫码。');
+        };
+        await confirmOwner(previousOwner, owner);
+        check();
+        const connection = await client.provision(slot.botQQ);
+        check();
+        if (connection.botQQ !== slot.botQQ)
+          throw new Error('NapCat 登录账号已更换，请重新扫码确认。');
+        await applySettings(
+          {
+            config: {
+              onebot: {
+                ...config.value.onebot,
+                enabled: true,
+                url: connection.url,
+                botQQ: connection.botQQ,
+                ownerQQ: owner,
+              },
+            },
+            onebotToken: connection.token,
+          },
+          previousOwner,
+        );
+        onebot.start();
+        if (pairing === slot) closePairing();
+      } finally {
+        slot.busy = false;
+      }
     },
     chat: async (input: unknown) => {
       if (!config.value.enabled) throw new Error('请先恢复回复');
@@ -353,29 +554,29 @@ async function start(): Promise<void> {
         mention: false,
       });
     },
-    history: (room: unknown, before?: unknown) =>
+    history: (room: unknown, before?: unknown, limit?: unknown) =>
       peer.call('history', {
         id: validateConversationId(z.string().parse(room)),
         before: before === undefined ? undefined : z.number().int().positive().parse(before),
+        limit: limit === undefined ? undefined : z.number().int().min(1).max(101).parse(limit),
       }),
     conversation: async (room: unknown, patch: unknown) => {
       const key = validateConversationId(z.string().parse(room));
       const value = conversationSchema.partial().parse(patch);
-      config.update({
-        conversations: {
-          ...config.value.conversations,
-          [key]: {
-            mode: 'companion',
-            ambient: false,
-            muted: false,
-            ...config.value.conversations[key],
-            ...value,
+      await applySettings({
+        config: {
+          conversations: {
+            ...config.value.conversations,
+            [key]: {
+              mode: 'companion',
+              ambient: false,
+              muted: false,
+              ...config.value.conversations[key],
+              ...value,
+            },
           },
         },
       });
-      broker.cancel(key);
-      await peer.call('configure', config.value);
-      notify();
     },
     stop: async (room?: unknown) => {
       const key = room === undefined ? undefined : validateConversationId(z.string().parse(room));
@@ -396,29 +597,41 @@ async function start(): Promise<void> {
       broker.answer(z.string().uuid().parse(key), z.boolean().parse(allow));
       notify();
     },
-    modelTest: async () => {
-      const result = await model.stream(
-        {
-          context: {
-            messages: [
-              { role: 'system', content: '只回答连接成功。', timestamp: Date.now() },
-              { role: 'user', content: '请回答连接成功', timestamp: Date.now() },
-            ],
-          } as unknown as TranscriptContext,
-          budget: 64,
-          thinking: 'off',
-        },
-        () => {},
-        AbortSignal.timeout(20000),
-      );
-      return {
-        ok: result.stopReason === 'stop',
-        detail: result.content
-          .filter((c) => c.type === 'text')
-          .map((c) => c.text)
-          .join('')
-          .slice(0, 200),
-      };
+    modelTest: () =>
+      verification.run(config.value.model, () => probeModel(model)).finally(() => notify()),
+    testAndSaveModel: async (profile: unknown, rawKey?: unknown) => {
+      const draft = modelSchema.parse(profile);
+      const key = z.string().max(1000).optional().parse(rawKey)?.trim();
+      const reference = keyReference(draft);
+      const storedKey = vault.get(reference);
+      const credential = key || storedKey;
+      if (draft.keyRequired && !credential) throw new Error('请输入这个模型接口的 API Key。');
+      if (key && !vault.available) throw new Error('本机凭据加密不可用，无法保存 API Key。');
+      const active = config.value.model;
+      const activeKey = vault.get(keyReference(active));
+      if (
+        isDeepStrictEqual(active, draft) &&
+        storedKey === credential &&
+        verification.verified(draft)
+      )
+        return snapshot();
+      const candidate = isTest
+        ? new TestModelHost(draft.model)
+        : new ModelHost(() => draft, { get: () => credential });
+      const outcome = await probeModel(candidate);
+      if (!outcome.ok) throw new Error(outcome.detail);
+      if (
+        !isDeepStrictEqual(active, config.value.model) ||
+        activeKey !== vault.get(keyReference(active)) ||
+        storedKey !== vault.get(reference)
+      )
+        throw new Error('测试期间模型配置已更改，请重新测试。');
+      await applySettings({ config: { model: draft }, ...(key ? { apiKey: key } : {}) });
+      if (!isDeepStrictEqual(draft, config.value.model) || credential !== vault.get(reference))
+        throw new Error('模型配置已更改，请重新测试。');
+      verification.saveSuccess(draft);
+      notify();
+      return snapshot();
     },
     connect: () => {
       onebot.start();
@@ -428,13 +641,7 @@ async function start(): Promise<void> {
       onebot.stop();
       notify();
     },
-    sandboxCheck: async () => {
-      const value = await sandbox.check();
-      if (value.available) await sandbox.reap();
-      await peer.call('configure', config.value);
-      notify();
-      return value;
-    },
+    sandboxCheck: checkSandbox,
     skills: () => skills.list(),
     chooseSkill: async () => {
       const chosen = await dialog.showOpenDialog(win!, {
@@ -496,21 +703,38 @@ async function start(): Promise<void> {
       return app.getLoginItemSettings().openAtLogin;
     },
     approveFriend: async (key: unknown) => {
-      const friend = friends.find((f) => f.id === key && !f.handled);
-      if (!friend) throw new Error('好友申请不存在');
-      const confirmation = await dialog.showMessageBox(win!, {
-        type: 'question',
-        message: `通过 ${friend.qq} 的好友申请？`,
-        detail: friend.comment,
-        buttons: ['取消', '通过'],
-        defaultId: 0,
-        cancelId: 0,
-      });
-      if (confirmation.response !== 1) return;
-      await onebot.call('set_friend_add_request', { flag: friend.flag, approve: true });
-      friend.handled = true;
-      atomicJson(requestsFile, friends);
-      notify();
+      try {
+        await friends.review(
+          z.string().uuid().parse(key),
+          async (friend) => {
+            if (friend.uncertain) {
+              const answer = await dialog.showMessageBox(win!, {
+                type: 'question',
+                message: `${friend.qq} 的好友申请处理结果待核实`,
+                detail: '在 QQ 中查看申请结果后，可以移除本机提醒。',
+                buttons: ['取消', '已核实，移除提醒'],
+                defaultId: 0,
+                cancelId: 0,
+              });
+              return answer.response === 1 ? 'dismiss' : 'cancel';
+            }
+            const answer = await dialog.showMessageBox(win!, {
+              type: 'question',
+              message: `处理 ${friend.qq} 发给 ${friend.account} 的好友申请`,
+              detail: [friend.comment, '聊天权限由「谁可以和小鱼聊天」的名单控制。']
+                .filter(Boolean)
+                .join('\n\n'),
+              buttons: ['取消', '通过', '拒绝申请'],
+              defaultId: 0,
+              cancelId: 0,
+            });
+            return answer.response === 1 ? 'accept' : answer.response === 2 ? 'decline' : 'cancel';
+          },
+          (flag, approve) => onebot.call('set_friend_add_request', { flag, approve }),
+        );
+      } finally {
+        notify();
+      }
     },
   };
   for (const [method, handler] of Object.entries(handlers))
@@ -541,7 +765,9 @@ async function start(): Promise<void> {
   win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) =>
     callback(false),
   );
-  await win.loadFile(join(here, '../renderer/index.html'));
+  await win.loadFile(join(here, '../renderer/index.html'), {
+    hash: process.argv.includes('--napcat-settings') ? 'napcat' : '',
+  });
   win.show();
   const icon = nativeImage.createFromPath(join(here, '../assets/icon.png'));
   tray = new Tray(icon);
@@ -591,6 +817,7 @@ async function start(): Promise<void> {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    closePairing();
     clearTimeout(stateTimer);
     broker.cancel();
     onebot.stop();
@@ -635,7 +862,169 @@ async function start(): Promise<void> {
         .capturePage()
         .then((image) => writeFileSync(reportPath + '.' + page + '.png', image.toPNG()));
     }
+    await win.webContents.executeJavaScript(`(${testToolSwitches.toString()})()`);
+    const fixturePort = Number(process.env.CHATDS_SMOKE_QQ_PORT);
+    if (Number.isInteger(fixturePort) && fixturePort > 0 && fixturePort < 65536) {
+      const previousPicker = dialog.showOpenDialog;
+      try {
+        dialog.showOpenDialog = async () => ({
+          canceled: false,
+          filePaths: [join(directory, 'napcat-fixture')],
+        });
+        report.qqOnline = await win.webContents.executeJavaScript(
+          `(${testQQPairing.toString()})()`,
+        );
+      } finally {
+        dialog.showOpenDialog = previousPicker;
+      }
+    }
+    report.modelStatus = await win.webContents.executeJavaScript(
+      `(${testModelStatus.toString()})()`,
+    );
     writeFileSync(reportPath, JSON.stringify(report, null, 2));
     app.quit();
   }
+}
+
+async function testToolSwitches() {
+  document.querySelector<HTMLButtonElement>('[data-page="tools"]')!.click();
+  const toggle = (id: string) =>
+    [...document.querySelectorAll('#tools code')]
+      .find((c) => c.textContent === id)!
+      .parentElement!.parentElement!.querySelector('input')!;
+  if (!toggle('sandbox_exec').disabled) throw new Error('未检查隔离环境时不应允许开启脚本执行');
+  toggle('read_file').click();
+  toggle('write_file').click();
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const { config } = await window.chatds.state();
+    if (config.tools.read_file && config.tools.write_file) break;
+    if (Date.now() > deadline) throw new Error('连续切换的两个工具权限没有同时保存');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+async function testModelStatus() {
+  const api = window.chatds;
+  const input = (id: string) => document.getElementById(id) as HTMLInputElement;
+  const until = async (ready: () => boolean) => {
+    const deadline = Date.now() + 5000;
+    while (!ready()) {
+      if (Date.now() > deadline) throw new Error('模型配置页面未进入预期状态');
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  };
+  const { config } = await api.state();
+  const model = { ...config.model, keyRequired: true };
+  const saved = await api.configure({ config: { model }, apiKey: 'local-smoke-fixture' });
+  document.querySelector<HTMLButtonElement>('[data-page="settings"]')!.click();
+  document.getElementById('model-retest')!.click();
+  const end = Date.now() + 5000;
+  while (!document.getElementById('model-status')!.textContent!.includes('验证通过')) {
+    if (Date.now() > end) throw new Error('模型测试状态未显示');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  document.getElementById('model-edit')!.click();
+  const blocked =
+    (document.getElementById('model-save') as HTMLButtonElement).disabled &&
+    (document.getElementById('model-test') as HTMLButtonElement).disabled &&
+    document.getElementById('model-key-label')!.classList.contains('hidden');
+  input('model-id').value = 'fixture-unavailable';
+  input('model-id').dispatchEvent(new Event('input', { bubbles: true }));
+  document.getElementById('model-replace-key')!.click();
+  input('api-key').value = 'unverified-fixture-key';
+  input('api-key').dispatchEvent(new Event('input', { bubbles: true }));
+  document.getElementById('model-test')!.click();
+  await until(() =>
+    document.getElementById('model-result')!.textContent!.includes('测试模型暂不可用'),
+  );
+  const preserved = await api.state();
+  if (
+    !preserved.modelVerified ||
+    preserved.config.model.model !== model.model ||
+    input('model-id').value !== 'fixture-unavailable'
+  )
+    throw new Error('候选模型测试失败后丢失了原配置或草稿');
+  document.getElementById('model-cancel')!.click();
+  const duplicate = await api.configure({ config: { model }, apiKey: 'local-smoke-fixture' });
+  const changed = await api.configure({ apiKey: 'local-smoke-replacement' });
+  const available = { ...model, model: 'fixture-available' };
+  const verified = await api.testAndSaveModel(available);
+  return (
+    saved.keyConfigured &&
+    !saved.modelVerified &&
+    blocked &&
+    duplicate.modelVerified &&
+    duplicate.config.revision === saved.config.revision &&
+    !changed.modelVerified &&
+    verified.modelVerified &&
+    verified.config.model.model === available.model
+  );
+}
+
+// Serialized into the isolated smoke renderer, just like a user operating these controls.
+async function testQQPairing() {
+  const find = (id: string) => document.getElementById(id)!;
+  const wait = async (matches: () => boolean) => {
+    const end = Date.now() + 8000;
+    while (!matches()) {
+      if (Date.now() > end) throw new Error('QQ 登录界面未进入预期状态');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  };
+  const visible = (id: string) => find(id).getClientRects().length > 0;
+  const nav = (page: string) =>
+    document.querySelector<HTMLButtonElement>('[data-page="' + page + '"]')!;
+  const hasPublish = () =>
+    Array.from(find('tools').querySelectorAll('code')).some(
+      (label) => label.textContent === 'qzone_publish',
+    );
+  nav('tools').click();
+  if (hasPublish()) throw new Error('未配置时工具页显示了发布说说');
+  nav('chat').click();
+  if (nav('connections').getClientRects().length || visible('room-connect'))
+    throw new Error('未配置时显示了 QQ 入口');
+  nav('settings').click();
+  find('setup-qq').click();
+  if (visible('napcat-choose') || visible('qq-management') || !visible('napcat-installation'))
+    throw new Error('未配置时没有显示独立的 NapCat 安装设置');
+  find('napcat-installation').click();
+  await wait(() => visible('napcat-choose'));
+  if (visible('qq-management') || nav('connections').getClientRects().length)
+    throw new Error('只有安装目录时显示了 QQ 业务入口');
+  find('napcat-choose').click();
+  await wait(
+    () =>
+      !find('napcat-qr').classList.contains('hidden') &&
+      (find('napcat-qr') as HTMLImageElement).naturalWidth > 0,
+  );
+  await wait(() => find('napcat-state').textContent!.includes('在手机 QQ 上确认'));
+  await wait(() => !find('napcat-bind').classList.contains('hidden'));
+  (find('napcat-owner') as HTMLInputElement).value = '10002';
+  (find('napcat-bind') as HTMLFormElement).requestSubmit();
+  await wait(() => find('qq-status').textContent === 'QQ 在线');
+  const state = await window.chatds.state();
+  if (!visible('qq-management') || !nav('connections').getClientRects().length)
+    throw new Error('OneBot 账号核验通过后仍缺少 QQ 入口');
+  nav('tools').click();
+  if (!hasPublish()) throw new Error('账号核验通过后工具页缺少发布说说');
+  nav('connections').click();
+  await window.chatds.napcatForgetInstallation();
+  await wait(() => visible('qq-management') && !visible('qq-switch') && !visible('napcat-forget'));
+  find('disconnect').click();
+  nav('tools').click();
+  await wait(() => !hasPublish() && !nav('connections').getClientRects().length);
+  nav('chat').click();
+  if (visible('room-connect')) throw new Error('OneBot 断开后仍显示 QQ 入口');
+  nav('settings').click();
+  if (find('setup-qq').textContent !== '管理 OneBot 连接')
+    throw new Error('单独配置 OneBot 后仍被引导配置 NapCat');
+  find('setup-qq').click();
+  if (visible('napcat-choose') || !visible('qq-reconnect'))
+    throw new Error('仅配置 OneBot 时显示了错误的登录入口');
+  return (
+    state.account === '10001' &&
+    state.config.onebot.ownerQQ === '10002' &&
+    state.onebotTokenConfigured
+  );
 }

@@ -1,9 +1,14 @@
+import { renderConnections, leaveConnections, hasQQChannel } from './connections.js';
+import { renderNapcatSettings } from './napcat-settings.js';
+import { activePersonaName } from '../shared/persona.js';
+import { personaEditor } from './persona-editor.js';
 import type {
   AppSnapshot,
   ChatMessage,
   MemoryFact,
   SkillInfo,
   ConversationSettings,
+  ModelProfile,
   ToolId,
 } from '../shared/types.js';
 const api = window.chatds;
@@ -31,19 +36,19 @@ const icons: Record<string, string> = {
 };
 const titles: Record<string, string> = {
   chat: '聊聊天',
-  connections: '连接与近况',
+  connections: 'NapCat 与 QQ',
   memory: '记得的小事',
-  persona: '小鱼的性格',
+  persona: '小鱼人设',
   tools: '工具与技能',
-  settings: '设置',
+  settings: '环境配置',
 };
 const navLabels: Record<string, string> = {
   chat: '聊天',
-  connections: '连接',
+  connections: 'QQ 管理',
   memory: '记忆',
-  persona: '人设',
+  persona: '小鱼人设',
   tools: '工具',
-  settings: '设置',
+  settings: '环境配置',
 };
 const phases: Record<string, string> = {
   idle: '空闲',
@@ -80,8 +85,15 @@ let state: AppSnapshot | undefined,
   roomId = 'desktop:owner',
   historyVersion = '',
   requestVersion = 0,
-  formsLoaded = false,
-  personaLoaded = false;
+  formsLoaded = false;
+let editingModel = false,
+  replacingModelKey = false,
+  modelBusy = false;
+const historyPageSize = 100;
+let historyCursors: number[] = [];
+let olderCursor: number | undefined;
+let desktopDraft = '';
+const renderPersona = personaEditor(api, toast);
 let memoryRows: MemoryFact[] = [],
   refreshTimer: ReturnType<typeof setTimeout> | undefined,
   noticeTimer: ReturnType<typeof setTimeout> | undefined,
@@ -104,18 +116,23 @@ async function act(fn: () => unknown | Promise<unknown>, success?: string) {
 }
 function navigate(next: string) {
   if (!titles[next]) return;
+  if (page === 'settings' && next !== page && editingModel && !modelChanged()) {
+    editingModel = false;
+    replacingModelKey = false;
+  }
+  if (page === 'connections' && next !== page) leaveConnections();
+  if (page !== next) window.scrollTo(0, 0);
   page = next;
   for (const key of Object.keys(titles)) $('#page-' + key).classList.toggle('hidden', key !== page);
   $('#page-title').textContent = titles[page]!;
-  document
-    .querySelectorAll<HTMLButtonElement>('[data-page]')
-    .forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  document.title = titles[page] + ' · ChatDS';
   render();
   if (page === 'memory') void loadMemories();
   if (page === 'tools') void loadSkills();
 }
 for (const [key, label] of Object.entries(navLabels)) {
   const b = el('button');
+  if (key === 'connections') b.classList.add('hidden');
   b.dataset.page = key;
   b.title = label;
   b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${icons[key]}"/></svg><span>${label}</span>`;
@@ -129,29 +146,99 @@ $('#collapse').onclick = () => {
 };
 if (localStorage.getItem('chatds-sidebar') === 'collapsed') $('.app').classList.add('collapsed');
 $('#local-room').onclick = () => chooseRoom('desktop:owner');
+$('#model-badge').onclick = $('#chat-setup').onclick = () => navigate('settings');
+$('#room-connect').onclick = $('#setup-qq').onclick = () => navigate('connections');
+$('#setup-persona').onclick = () => navigate('persona');
+$('#setup-chat').onclick = () => {
+  chooseRoom('desktop:owner');
+  field('#message').focus();
+};
+function modelReady(s: AppSnapshot) {
+  return s.keyConfigured || !s.config.model.keyRequired;
+}
 function chooseRoom(key: string) {
-  roomId = key;
-  historyVersion = '';
+  resetHistory(key);
   navigate('chat');
 }
+function resetHistory(key: string) {
+  const input = $('#message') as HTMLTextAreaElement;
+  if (key !== roomId) {
+    if (roomId === 'desktop:owner') desktopDraft = input.value;
+    input.value = key === 'desktop:owner' ? desktopDraft : '';
+  }
+  roomId = key;
+  historyVersion = '';
+  historyCursors = [];
+  olderCursor = undefined;
+  requestVersion++;
+  $('#history-nav').classList.add('hidden');
+  $('#messages').replaceChildren();
+}
+$('#history-older').onclick = () => {
+  if (olderCursor === undefined) return;
+  void loadHistory(roomId, true, [...historyCursors, olderCursor]);
+};
+$('#history-newer').onclick = () => {
+  void loadHistory(roomId, true, historyCursors.slice(0, -1));
+};
+$('#history-latest').onclick = () => {
+  void loadHistory(roomId, true, []);
+};
 function roomSettings(): ConversationSettings {
   return state?.config.conversations[roomId] ?? { mode: 'companion', ambient: false, muted: false };
 }
 function render() {
   if (!state) return;
   const s = state;
+  renderConnections(s);
+  renderNapcatSettings(s.napcatInstallation);
+  const hasQQ = hasQQChannel(s);
+  $('[data-page="connections"]').classList.toggle('hidden', !hasQQ);
+  const activeNav = page === 'connections' && !hasQQ ? 'settings' : page;
+  document.querySelectorAll<HTMLButtonElement>('[data-page]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.page === activeNav);
+    if (b.dataset.page === activeNav) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
+  if (!hasQQ && roomId !== 'desktop:owner') {
+    resetHistory('desktop:owner');
+  }
+  $('#room-connect').classList.toggle('hidden', !hasQQ);
+  $('#qq-boundary').classList.toggle('hidden', !hasQQ);
+  $('#setup-qq').textContent = s.napcatInstallation
+    ? 'NapCat 配置'
+    : s.config.onebot.botQQ && s.onebotTokenConfigured
+      ? '管理 OneBot 连接'
+      : '配置 NapCat（可选）';
   $('#test-badge').classList.toggle('hidden', !s.testMode);
-  $('#model-badge').textContent =
-    s.keyConfigured || !s.config.model.keyRequired ? s.config.model.model : '先连接模型';
+  $('#model-badge').textContent = modelReady(s)
+    ? s.config.model.model + (s.modelVerified ? ' · 已验证' : ' · 已配置')
+    : '配置聊天模型';
+  $('#model-badge').classList.toggle('hidden', page === 'settings');
+  $('#pause').classList.toggle('hidden', !modelReady(s) && s.config.enabled);
+  $('#setup-persona-status').textContent =
+    '正在使用「' + activePersonaName(s.config) + '」角色卡。';
+  const qqStatus =
+    !hasQQ && s.connection === 'online' ? '账号未核对' : (statuses[s.connection] ?? s.connection);
+  $('#setup-qq-status').textContent = hasQQ
+    ? 'QQ 已连接 · ' + s.config.onebot.botQQ
+    : s.config.onebot.botQQ
+      ? qqStatus + ' · ' + s.config.onebot.botQQ
+      : s.napcatInstallation?.available
+        ? '已选择 NapCat 安装目录，可继续登录 QQ。'
+        : s.napcatInstallation
+          ? '已保存的 NapCat 安装目录不可用，请重新选择。'
+          : '尚未关联本机 NapCat 安装目录。';
   $('#pause').textContent = s.config.enabled ? '暂停回复' : '恢复回复';
   $('#side-status').textContent = s.config.enabled ? '● 本机运行' : '○ 回复已暂停';
-  $('#qq-status').textContent = statuses[s.connection] ?? s.connection;
-  $('#qq-status').className = s.connection === 'online' ? 'badge online' : 'badge';
-  $('#room-count').textContent = String(s.rooms.length);
+  $('#qq-status').textContent = qqStatus;
+  $('#qq-status').classList.toggle('online', hasQQ);
+  const qqRooms = hasQQ ? s.rooms.filter((r) => r.id !== 'desktop:owner') : [];
+  $('#room-count').textContent = String(1 + qqRooms.length);
   $('#local-room').classList.toggle('active', roomId === 'desktop:owner');
   const rooms = $('#rooms');
   rooms.replaceChildren();
-  for (const row of s.rooms.filter((r) => r.id !== 'desktop:owner').slice(0, 100)) {
+  for (const row of qqRooms.slice(0, 100)) {
     const b = el('button', 'room' + (row.id === roomId ? ' active' : ''));
     const copy = el('span');
     copy.append(
@@ -171,16 +258,8 @@ function render() {
     fillForms(s);
     formsLoaded = true;
   }
-  if (!personaLoaded) {
-    field('#persona').value = s.config.persona;
-    personaLoaded = true;
-    $('#persona-count').textContent = s.config.persona.length + ' 字符';
-  }
-  $('#key-status').textContent = !s.vaultAvailable
-    ? '本机凭据加密不可用，请查看故障说明。'
-    : s.keyConfigured
-      ? '已为当前模型地址保存密钥；输入框不会回读密钥。'
-      : '当前模型地址尚未保存密钥。';
+  renderPersona(s.config);
+  renderModelSettings();
   $('#qq-token-status').textContent = s.onebotTokenConfigured
     ? '已保存令牌；留空保留。'
     : '尚未保存 Access Token。';
@@ -194,35 +273,49 @@ function render() {
   renderFriends();
   renderActivities();
   if (page === 'chat') renderChat();
-  if (page === 'tools') renderTools();
+  if (page === 'tools') renderTools(s);
 }
 function fillForms(s: AppSnapshot) {
-  const m = s.config.model,
-    q = s.config.onebot;
-  select('#provider').value = m.provider;
+  fillModel(s.config.model);
+  field('#auto-memory').checked = s.config.memory.automatic;
+  field('#startup').checked = s.loginStartup;
+}
+function fillModel(m: ModelProfile) {
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(m.baseUrl).hostname);
+  select('#provider').value = local && m.provider === 'openai-compatible' ? 'local' : m.provider;
+  $<HTMLDetailsElement>('#endpoint-options').open =
+    m.provider !== 'deepseek' ||
+    m.model !== 'deepseek-flash' ||
+    m.baseUrl !== 'https://api.deepseek.com';
   field('#model-id').value = m.model;
   field('#base-url').value = m.baseUrl;
   field('#context-window').value = String(m.contextWindow);
   field('#output-tokens').value = String(m.maxOutputTokens);
   select('#thinking').value = m.thinking;
   field('#key-required').checked = m.keyRequired;
-  field('#qq-url').value = q.url;
-  field('#bot-qq').value = q.botQQ;
-  field('#owner-qq').value = q.ownerQQ;
-  field('#qq-users').value = q.users.join(', ');
-  field('#qq-groups').value = q.groups.join(', ');
-  field('#qq-enabled').checked = q.enabled;
-  field('#auto-memory').checked = s.config.memory.automatic;
-  field('#startup').checked = s.loginStartup;
+  field('#api-key').value = '';
+  replacingModelKey = false;
 }
 function renderApprovals() {
   const holder = $('#approvals');
-  holder.replaceChildren();
+  const current = new Set(state!.approvals.map((a) => a.id));
+  for (const card of holder.querySelectorAll<HTMLElement>('[data-approval-id]')) {
+    if (!current.has(card.dataset.approvalId!)) card.remove();
+  }
   for (const a of state!.approvals) {
+    if (document.getElementById('approval-' + a.id)) continue;
     const card = el('article', 'approval');
+    card.id = 'approval-' + a.id;
+    card.dataset.approvalId = a.id;
+    const source =
+      a.conversationId === 'desktop:owner'
+        ? '桌面聊天'
+        : 'QQ 私聊 ' + a.conversationId.split(':').at(-1);
+    const target =
+      a.tool === 'qzone_publish' ? ' · 发布到 QQ ' + state!.config.onebot.botQQ + ' 的空间' : '';
     card.append(
       el('h3', '', a.summary),
-      el('small', 'muted', '仅确认下面这一次操作；更改权限或停止任务会取消确认。'),
+      el('small', 'muted', '来自' + source + target),
       el('pre', '', a.detail),
     );
     const actions = el('div', 'row');
@@ -245,32 +338,61 @@ function renderChat() {
     settings = roomSettings();
   $('#chat-name').textContent = local ? '桌面聊天' : (room?.name ?? 'QQ 会话');
   const waiting = s.approvals.some((a) => a.conversationId === roomId);
-  $('#chat-phase').textContent =
-    room?.error ?? (waiting ? '等待你的确认' : phases[room?.phase ?? 'idle']!);
+  $('#chat-phase').textContent = !s.config.enabled
+    ? '所有会话已暂停回复'
+    : settings.muted
+      ? '此会话只同步消息'
+      : (room?.error ?? (waiting ? '等待你的确认' : phases[room?.phase ?? 'idle']!));
   select('#mode').value = settings.mode;
-  field('#ambient').checked = settings.ambient;
+  field('#ambient').disabled = settings.muted;
+  field('#ambient').checked = !settings.muted && settings.ambient;
   field('#muted').checked = settings.muted;
   $('#group-options').classList.toggle('hidden', !room?.isGroup);
-  field('#message').disabled = !local;
-  field('#send').disabled = !local || !s.config.enabled;
-  field('#message').placeholder = local ? '跟小鱼说句话…' : '在 QQ 中发消息，这里同步显示记录';
-  $('#chat-hint').textContent = local
-    ? 'Enter 发送，Shift + Enter 换行'
-    : '这里不会代你发 QQ 消息，请在 QQ 中交流。';
+  const needsSetup = local && !modelReady(s);
+  field('#message').disabled = !local || needsSetup;
+  field('#send').disabled = !local || needsSetup || !s.config.enabled;
+  $('#chat-setup').classList.toggle('hidden', !needsSetup);
+  $('#send').classList.toggle('hidden', needsSetup);
+  field('#message').placeholder = !local
+    ? '在 QQ 中发消息，这里同步显示记录'
+    : needsSetup
+      ? '连接一个模型后，就可以开始聊天。'
+      : '跟' + activePersonaName(state!.config) + '说句话…';
+  $('#chat-hint').textContent = !local
+    ? '请在 QQ 中回复。'
+    : needsSetup
+      ? '支持 DeepSeek 和本机模型服务'
+      : !s.config.enabled
+        ? '点击右上角「恢复回复」继续聊天'
+        : 'Enter 发送，Shift + Enter 换行';
   $('#stop').toggleAttribute('disabled', !room || room.phase === 'idle');
   const signature = roomId + ':' + (room?.updatedAt ?? 0);
   if (signature !== historyVersion) {
+    const first = !historyVersion;
     historyVersion = signature;
-    void loadHistory(roomId);
+    if (!historyCursors.length) void loadHistory(roomId, first);
   }
   $('#draft').classList.toggle('hidden', !room || room.phase === 'idle' || !!room.error);
   $('#draft').textContent = room?.draft || phases[room?.phase ?? 'idle']!;
 }
-async function loadHistory(key: string) {
+async function loadHistory(key: string, pageChanged = false, cursors = historyCursors) {
   const request = ++requestVersion;
+  const previous = historyCursors;
+  historyCursors = cursors;
+  const before = historyCursors.at(-1);
+  const controls = ['#history-older', '#history-newer', '#history-latest'].map((id) =>
+    $<HTMLButtonElement>(id),
+  );
+  for (const button of controls) button.disabled = true;
   try {
-    const messages = await api.history(key);
+    const result = await api.history(key, before, historyPageSize + 1);
     if (request !== requestVersion || key !== roomId) return;
+    const messages = result.slice(-historyPageSize);
+    olderCursor = result.length > historyPageSize ? messages[0]?.seq : undefined;
+    $('#history-older').classList.toggle('hidden', olderCursor === undefined);
+    $('#history-newer').classList.toggle('hidden', historyCursors.length < 2);
+    $('#history-latest').classList.toggle('hidden', before === undefined);
+    $('#history-nav').classList.toggle('hidden', olderCursor === undefined && before === undefined);
     const box = $('#messages'),
       nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 100;
     box.replaceChildren();
@@ -287,18 +409,30 @@ async function loadHistory(key: string) {
       );
       box.append(empty);
     } else for (const message of messages) box.append(messageNode(message));
-    if (nearBottom || request === 1) box.scrollTop = box.scrollHeight;
+    if (nearBottom || pageChanged) box.scrollTo({ top: box.scrollHeight, behavior: 'instant' });
   } catch (error) {
+    if (request !== requestVersion) return;
+    historyCursors = previous;
+    historyVersion = '';
     toast(String(error), true);
+  } finally {
+    if (request === requestVersion) for (const button of controls) button.disabled = false;
   }
 }
 function messageNode(message: ChatMessage) {
   const row = el('div', 'message ' + message.role),
     body = el('div', 'message-body');
-  body.append(
-    el('div', 'message-name', message.role === 'assistant' ? '小鱼' : message.name),
-    el('div', 'bubble', message.text),
-  );
+  body.append(el('div', 'message-name', message.name), el('div', 'bubble', message.text));
+  if (message.role === 'assistant' && message.webReads?.length) {
+    const receipts = el('ul', 'web-receipts');
+    receipts.setAttribute('aria-label', '本次实际网页读取记录');
+    for (const receipt of message.webReads) {
+      const label = receipt.status === 'read' ? '网页已读取' : '网页读取失败';
+      const details = [label, receipt.host, receipt.status === 'failed' && receipt.reason];
+      receipts.append(el('li', '', details.filter(Boolean).join(' · ')));
+    }
+    body.append(receipts);
+  }
   if (message.status === 'unknown' || message.status === 'failed')
     body.append(
       el(
@@ -337,10 +471,11 @@ function renderActivities() {
   $('#activity-status').textContent =
     phases[state!.rooms.find((r) => r.id === roomId)?.phase ?? 'idle']!;
 }
-function renderTools() {
+function renderTools(snapshot: AppSnapshot) {
   const host = $('#tools');
   host.replaceChildren();
-  for (const [key, enabled] of Object.entries(state!.config.tools)) {
+  for (const [key, enabled] of Object.entries(snapshot.config.tools)) {
+    if (key === 'qzone_publish' && !hasQQChannel(snapshot)) continue;
     const tool = key as ToolId,
       row = el('div', 'tool-row'),
       copy = el('div');
@@ -348,11 +483,19 @@ function renderTools() {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = enabled;
+    if (tool === 'sandbox_exec' && !snapshot.sandbox.available) {
+      input.disabled = !enabled;
+      copy.append(
+        el(
+          'small',
+          'muted',
+          enabled ? '已授权，等待隔离环境就绪。' : '先检查 Docker 与专用镜像，即可开启。',
+        ),
+      );
+    }
     input.setAttribute('aria-label', toolLabels[tool]);
     input.onchange = () =>
-      act(() =>
-        api.configure({ config: { tools: { ...state!.config.tools, [tool]: input.checked } } }),
-      );
+      act(() => api.configure({ config: { tools: { [tool]: input.checked } } }));
     row.append(copy, input);
     host.append(row);
   }
@@ -363,7 +506,7 @@ function renderFriends() {
   for (const f of state!.friendRequests) {
     const row = el('div', 'friend');
     row.append(el('strong', '', f.qq), el('p', '', f.comment));
-    const button = el('button', '', '查看并处理');
+    const button = el('button', '', f.uncertain ? '去 QQ 核实后处理提醒' : '查看并处理');
     button.onclick = () => act(() => api.approveFriend(f.id));
     row.append(button);
     host.append(row);
@@ -490,9 +633,18 @@ $('#composer').onsubmit = (event) => {
   event.preventDefault();
   const input = field('#message'),
     text = input.value.trim();
-  if (!text) return;
+  if (!text || field('#send').disabled) return;
   input.value = '';
-  void act(() => api.chat(text));
+  void act(async () => {
+    try {
+      await api.chat(text);
+      if (roomId === 'desktop:owner' && historyCursors.length) await loadHistory(roomId, true, []);
+    } catch (error) {
+      if (roomId !== 'desktop:owner') desktopDraft ||= text;
+      else if (!input.value) input.value = text;
+      throw error;
+    }
+  });
 };
 $('#message').onkeydown = (event) => {
   const e = event as KeyboardEvent;
@@ -512,58 +664,217 @@ field('#ambient').onchange = () =>
   act(() => api.conversation(roomId, { ambient: field('#ambient').checked }));
 field('#muted').onchange = () =>
   act(() => api.conversation(roomId, { muted: field('#muted').checked }));
-$('#persona').oninput = () =>
-  ($('#persona-count').textContent = field('#persona').value.length + ' 字符');
-$('#save-persona').onclick = () =>
-  act(() => api.configure({ config: { persona: field('#persona').value } }), '人设已保存');
 field('#memory-search').oninput = renderMemories;
 select('#memory-scope').onchange = renderMemories;
-select('#provider').onchange = () => {
+function formModel(): ModelProfile {
+  return {
+    protocol: 'openai-completions',
+    provider: select('#provider').value === 'deepseek' ? 'deepseek' : 'openai-compatible',
+    baseUrl: field('#base-url').value.trim(),
+    model: field('#model-id').value.trim(),
+    contextWindow: Number(field('#context-window').value),
+    maxOutputTokens: Number(field('#output-tokens').value),
+    thinking: select('#thinking').value as ModelProfile['thinking'],
+    keyRequired: field('#key-required').checked,
+  };
+}
+function sameEndpoint(a: string, b: string) {
+  try {
+    const identity = (v: string) => {
+      const url = new URL(v);
+      return url.origin + url.pathname.replace(/\/$/, '');
+    };
+    return identity(a) === identity(b);
+  } catch {
+    return false;
+  }
+}
+function modelChanged() {
+  if (!state) return false;
+  const draft = formModel();
+  const saved = state.config.model;
+  return (
+    !!field('#api-key').value.trim() ||
+    (Object.keys(draft) as (keyof ModelProfile)[]).some((k) => draft[k] !== saved[k])
+  );
+}
+function renderModelSettings() {
+  if (!state) return;
+  const current = state.config.model;
+  const ready = modelReady(state);
+  const editing = !ready || editingModel;
+  $('#model-summary').classList.toggle('hidden', editing);
+  $('#model-form').classList.toggle('hidden', !editing);
+  $('#model-status').textContent = !ready
+    ? '待配置'
+    : editingModel
+      ? '编辑中'
+      : state.modelVerified
+        ? '已配置 · 验证通过'
+        : '已配置 · 待验证';
+  $('#model-status').classList.toggle('online', ready && !editingModel && state.modelVerified);
+  $('#current-model').textContent = current.model;
+  const url = new URL(current.baseUrl);
+  $('#current-endpoint').textContent = url.origin + url.pathname;
+  $('#current-key').textContent = state.keyConfigured
+    ? '已加密保存在本机'
+    : current.keyRequired
+      ? '尚未保存'
+      : '此接口无需密钥';
+  $('#model-retest').textContent = state.modelVerified ? '重新测试连接' : '测试连接';
+  field('#model-retest').disabled = modelBusy;
+  field('#model-edit').disabled = modelBusy;
+  field('#setup-chat').disabled = modelBusy;
+  $('#model-cancel').classList.toggle('hidden', !ready);
+  $<HTMLFieldSetElement>('#model-fields').disabled = !editing || modelBusy;
+  const m = formModel();
+  const saved =
+    state.keyConfigured &&
+    current.provider === m.provider &&
+    sameEndpoint(current.baseUrl, m.baseUrl);
+  $('#model-key-label').classList.toggle('hidden', saved && !replacingModelKey);
+  $('#model-replace-key').classList.toggle('hidden', !saved);
+  $('#model-replace-key').textContent = replacingModelKey ? '保留已存密钥' : '更换密钥';
+  $('#key-status').textContent = !state.vaultAvailable
+    ? '本机凭据加密不可用，无法保存新的 API Key。'
+    : saved
+      ? '已为此地址保存密钥。'
+      : m.keyRequired
+        ? '首次使用此地址时请输入 API Key。留空会使用此前为此地址保存的密钥。'
+        : '此接口允许免密访问，可留空。';
+  field('#api-key').placeholder = saved ? '已保存' : m.keyRequired ? '输入 API Key' : '可选';
+  const canSave = editing && !modelBusy && modelChanged();
+  field('#model-test').disabled = !canSave;
+  field('#model-save').disabled = !canSave;
+}
+function modelResult(message: string, error = false) {
+  $('#model-result').textContent = message;
+  $('#model-result').className =
+    'model-result' + (message ? '' : ' hidden') + (error ? ' error' : '');
+}
+$('#model-form').oninput = () => {
+  modelResult('');
+  renderModelSettings();
+};
+$('#model-edit').onclick = () => {
+  if (!state || modelBusy) return;
+  fillModel(state.config.model);
+  editingModel = true;
+  modelResult('');
+  renderModelSettings();
+  select('#provider').focus();
+};
+$('#model-cancel').onclick = () => {
+  if (!state || modelBusy) return;
+  fillModel(state.config.model);
+  editingModel = false;
+  modelResult('');
+  renderModelSettings();
+  $('#model-edit').focus();
+};
+$('#model-replace-key').onclick = () => {
   field('#api-key').value = '';
-  if (select('#provider').value === 'deepseek') {
-    field('#base-url').value = 'https://api.deepseek.com';
-    field('#model-id').value = 'deepseek-flash';
-  } else {
-    field('#base-url').value = 'http://127.0.0.1:11434/v1';
-    field('#model-id').value = '';
-    field('#key-required').checked = false;
+  replacingModelKey = !replacingModelKey;
+  renderModelSettings();
+  if (replacingModelKey) field('#api-key').focus();
+};
+select('#provider').onchange = () => {
+  const provider = select('#provider').value;
+  field('#api-key').value = '';
+  replacingModelKey = false;
+  field('#base-url').value =
+    provider === 'deepseek'
+      ? 'https://api.deepseek.com'
+      : provider === 'local'
+        ? 'http://127.0.0.1:11434/v1'
+        : '';
+  field('#base-url').placeholder = 'https://…/v1';
+  field('#model-id').value = provider === 'deepseek' ? 'deepseek-flash' : '';
+  field('#model-id').placeholder =
+    provider === 'local' ? '本机已安装的模型名称' : '服务商提供的模型 ID';
+  field('#key-required').checked = provider !== 'local';
+  $<HTMLDetailsElement>('#endpoint-options').open = provider !== 'deepseek';
+  renderModelSettings();
+};
+field('#base-url').oninput = () => {
+  field('#api-key').value = '';
+  replacingModelKey = false;
+};
+async function testModelConnection() {
+  modelResult('正在测试模型连接…');
+  try {
+    const result = await api.modelTest();
+    if (!result.ok) throw new Error(result.detail || '服务未返回完整回复');
+    modelResult('连接成功，可以开始聊天了。');
+  } catch (error) {
+    modelResult('连接测试失败。' + (error instanceof Error ? error.message : String(error)), true);
+  }
+  await refresh();
+}
+$('#model-retest').onclick = async () => {
+  if (!state || !modelReady(state) || editingModel || modelBusy) return;
+  modelBusy = true;
+  renderModelSettings();
+  try {
+    await testModelConnection();
+  } finally {
+    modelBusy = false;
+    renderModelSettings();
   }
 };
-$('#model-form').onsubmit = (event) => {
+$('#model-form').onsubmit = async (event) => {
   event.preventDefault();
-  void act(async () => {
-    const key = field('#api-key').value.trim();
-    await api.configure({
-      config: {
-        model: {
-          protocol: 'openai-completions',
-          provider: select('#provider').value as 'deepseek' | 'openai-compatible',
-          baseUrl: field('#base-url').value.trim(),
-          model: field('#model-id').value.trim(),
-          contextWindow: Number(field('#context-window').value),
-          maxOutputTokens: Number(field('#output-tokens').value),
-          thinking: select('#thinking').value as 'off' | 'low' | 'high',
-          keyRequired: field('#key-required').checked,
-        },
-      },
-      ...(key ? { apiKey: key } : {}),
-    });
-    field('#api-key').value = '';
-    formsLoaded = false;
-  }, '模型配置已保存');
-};
-$('#model-test').onclick = () =>
-  act(async () => {
-    const button = $('#model-test') as HTMLButtonElement;
-    button.disabled = true;
-    try {
-      const result = await api.modelTest();
-      if (!result.ok) throw new Error(result.detail);
-      toast('模型连接成功：' + result.detail);
-    } finally {
-      button.disabled = false;
+  if (!state || modelBusy || (modelReady(state) && !editingModel) || !modelChanged()) return;
+  const test = (event as SubmitEvent).submitter?.id !== 'model-save';
+  const model = formModel();
+  const key = field('#api-key').value.trim();
+  if (model.maxOutputTokens >= model.contextWindow / 2) {
+    $<HTMLDetailsElement>('#model-advanced').open = true;
+    field('#output-tokens').focus();
+    modelResult('最大输出需要小于上下文窗口的一半。', true);
+    return;
+  }
+  const current = state.config.model;
+  if (
+    test &&
+    model.keyRequired &&
+    !key &&
+    !state.keyConfigured &&
+    model.provider === current.provider &&
+    sameEndpoint(model.baseUrl, current.baseUrl)
+  ) {
+    field('#api-key').focus();
+    modelResult('请输入当前模型服务的 API Key。', true);
+    return;
+  }
+  modelBusy = true;
+  renderModelSettings();
+  modelResult(test ? '正在测试填写的模型…' : '正在保存…');
+  try {
+    state = test
+      ? await api.testAndSaveModel(model, key || undefined)
+      : await api.configure({ config: { model }, ...(key ? { apiKey: key } : {}) });
+    fillModel(state.config.model);
+    editingModel = false;
+    render();
+    if (test) {
+      modelResult('模型已验证并保存，可以开始聊天了。');
+    } else if (state.modelVerified) {
+      modelResult('当前配置与已验证的模型一致。');
+    } else {
+      modelResult(modelReady(state) ? '模型配置已保存。' : '配置已保存。补充 API Key 后即可聊天。');
     }
-  });
+  } catch (error) {
+    const detail = (error instanceof Error ? error.message : String(error)).replace(
+      /^Error invoking remote method '[^']+': (?:Error: )?/,
+      '',
+    );
+    modelResult((test ? '测试并保存失败。' : '未能保存配置。') + detail, true);
+  } finally {
+    modelBusy = false;
+    renderModelSettings();
+  }
+};
 function qqList(value: string) {
   const values = value.split(/[,，;；\s]+/).filter(Boolean);
   if (values.some((v) => !/^\d{5,12}$/.test(v))) throw new Error('QQ／群号需为 5 至 12 位数字');
@@ -573,33 +884,64 @@ $('#onebot-form').onsubmit = (event) => {
   event.preventDefault();
   void act(async () => {
     const token = field('#qq-token').value.trim();
+    const config = state!.config.onebot;
+    const botQQ = field('#bot-qq').value.trim(),
+      ownerQQ = field('#owner-qq').value.trim();
+    if (!/^\d{5,12}$/.test(botQQ) || !/^\d{5,12}$/.test(ownerQQ) || botQQ === ownerQQ)
+      throw new Error('请分别填写机器人和自己的 QQ 号，两者应为不同账号。');
+    if (!token && (!state!.onebotTokenConfigured || config.url !== field('#qq-url').value.trim()))
+      throw new Error('请填写这个服务的 Access Token。');
     await api.configure({
       config: {
         onebot: {
+          ...config,
           enabled: field('#qq-enabled').checked,
           url: field('#qq-url').value.trim(),
-          botQQ: field('#bot-qq').value.trim(),
-          ownerQQ: field('#owner-qq').value.trim(),
-          users: qqList(field('#qq-users').value),
-          groups: qqList(field('#qq-groups').value),
+          botQQ,
+          ownerQQ,
         },
       },
       ...(token ? { onebotToken: token } : {}),
     });
     field('#qq-token').value = '';
-    formsLoaded = false;
-  }, 'QQ 连接信息已保存');
+    await api.connect();
+  }, '已保存，正在核对机器人账号');
 };
-$('#connect').onclick = () => act(() => api.connect());
+$('#qq-access').onsubmit = (event) => {
+  event.preventDefault();
+  void act(
+    () =>
+      api.configure({
+        config: {
+          onebot: {
+            ...state!.config.onebot,
+            users: qqList(field('#qq-users').value),
+            groups: qqList(field('#qq-groups').value),
+          },
+        },
+      }),
+    '聊天名单已保存',
+  );
+};
+$('#qq-reconnect').onclick = () => act(() => api.connect());
 $('#disconnect').onclick = () => act(() => api.disconnect());
-$('#sandbox-check').onclick = () =>
-  act(async () => {
-    const result = await api.sandboxCheck();
-    toast(
-      result.available ? '隔离执行环境已准备好' : (result.reason ?? '不可用'),
-      !result.available,
-    );
-  });
+$('#sandbox-check').onclick = async () => {
+  const button = $<HTMLButtonElement>('#sandbox-check');
+  button.disabled = true;
+  button.textContent = '正在检查…';
+  try {
+    await act(async () => {
+      const result = await api.sandboxCheck();
+      toast(
+        result.available ? '隔离执行环境已准备好' : (result.reason ?? '不可用'),
+        !result.available,
+      );
+    });
+  } finally {
+    button.disabled = false;
+    button.textContent = '检查 Docker 与专用镜像';
+  }
+};
 $('#import-skill').onclick = () =>
   act(async () => {
     await api.chooseSkill();
@@ -620,5 +962,7 @@ field('#auto-memory').onchange = () =>
 field('#startup').onchange = () => act(() => api.loginStartup(field('#startup').checked));
 void (async () => {
   await refresh();
-  navigate(state && !state.keyConfigured && state.config.model.keyRequired ? 'settings' : 'chat');
+  navigate(
+    location.hash === '#napcat' ? 'connections' : state && !modelReady(state) ? 'settings' : 'chat',
+  );
 })();

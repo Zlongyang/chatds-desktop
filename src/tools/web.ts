@@ -56,7 +56,10 @@ export async function webRead(
           Accept: 'text/html,text/plain,application/json',
           'Accept-Encoding': 'identity',
         },
-        lookup: (_host, _options, callback) => callback(null, resolved.address, resolved.family),
+        lookup: (_host, options, callback) => {
+          if (options.all) callback(null, [resolved]);
+          else callback(null, resolved.address, resolved.family);
+        },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -91,18 +94,24 @@ export async function webRead(
   if (response.status < 200 || response.status >= 300)
     throw new Error('网页返回 HTTP ' + response.status);
   if (response.encoding !== 'identity') throw new Error('网页未提供未压缩的可读响应');
-  if (!/^(text\/(?:plain|html)|application\/(?:json|xhtml\+xml))/i.test(response.type))
+  const mediaType = response.type.split(';', 1)[0]!.trim().toLowerCase();
+  if (!['text/plain', 'text/html', 'application/json', 'application/xhtml+xml'].includes(mediaType))
     throw new Error('此响应不是可阅读的网页或文字');
-  const text = response.body
-    .toString('utf8')
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(
-      /&(?:nbsp|amp|lt|gt|quot);/g,
-      (m) => ({ '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"' })[m] ?? m,
-    )
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 24000);
+  const body = response.body.toString('utf8');
+  const content =
+    mediaType === 'text/html' || mediaType === 'application/xhtml+xml'
+      ? body
+          .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(
+            /&(?:nbsp|amp|lt|gt|quot);/g,
+            (m) =>
+              ({ '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"' })[m] ?? m,
+          )
+          .replace(/\s+/g, ' ')
+          .trim()
+      : body;
+  const text = content.slice(0, 24000);
+  if (!text.trim()) throw new Error('网页没有可读正文');
   return { url: url.href, text };
 }

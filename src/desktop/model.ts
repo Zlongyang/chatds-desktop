@@ -17,6 +17,7 @@ export interface ModelRequest {
   context: TranscriptContext;
   budget?: number;
   thinking?: 'off' | 'low' | 'high';
+  maxRetries?: 0;
 }
 export class ModelHost {
   constructor(
@@ -37,6 +38,7 @@ export class ModelHost {
       maxTokens: Math.min(request.budget ?? profile.maxOutputTokens, profile.maxOutputTokens),
       reasoning: profile.thinking === 'off' ? undefined : profile.thinking,
       signal,
+      maxRetries: request.maxRetries,
       fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }),
       onPayload: (payload) => {
         const p = payload as Record<string, unknown>;

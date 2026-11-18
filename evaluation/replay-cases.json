@@ -1,0 +1,262 @@
+[
+  {
+    "id": "pond",
+    "title": "群里的小水池",
+    "group": true,
+    "review": "听出连发两句是在问同一件事；追问时接住前文；观察话题转给群友后是否继续发言。",
+    "turns": [
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "qq:20001",
+            "displayName": "木子",
+            "text": "你那个小水池一般拿来干什么呀？",
+            "mention": true,
+            "quote": {
+              "actorId": "bot",
+              "text": "我回小水池待一会儿。"
+            }
+          },
+          {
+            "actorId": "qq:20001",
+            "displayName": "木子",
+            "text": "我是说，除了游泳的时候。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "qq:20001",
+            "displayName": "木子",
+            "text": "那下雨的时候呢？"
+          }
+        ]
+      },
+      {
+        "expectedAction": "silent",
+        "messages": [
+          {
+            "actorId": "qq:20001",
+            "displayName": "木子",
+            "text": "阿竹，明天那班车改几点了？",
+            "directedElsewhere": true
+          },
+          {
+            "actorId": "qq:20002",
+            "displayName": "阿竹",
+            "text": "七点半，还是老地方见。",
+            "quote": {
+              "actorId": "qq:20001",
+              "text": "阿竹，明天那班车改几点了？"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "wrong-date",
+    "title": "两张车票",
+    "group": false,
+    "review": "区分第一轮里连续发来的纠正，次轮回答沿用修正后的日期，留意重复追问。",
+    "turns": [
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "哎，我把车票买成周六了。"
+          },
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "等等，说反了！买的是周日，想要的才是周六。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "我都说绕了，你还记得我要坐哪天那趟吗？"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "night-shift",
+    "title": "临下班的消息",
+    "group": false,
+    "review": "观察对方只想倾诉时的措辞，以及话题转为分享日常后，上一轮的情绪是否被生硬延长。",
+    "turns": [
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "刚关电脑他们又让我改一遍。"
+          },
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "先别教我怎么说，我就是想抱怨两句。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "已经出门啦。楼下那只橘猫在我鞋子上坐下了。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "unfinished-voice",
+    "title": "差点寄错的包裹",
+    "group": true,
+    "review": "看等待是否留出了补充空间，补充后能否接住，结束后能否把话交还给群友。",
+    "turns": [
+      {
+        "expectedAction": "wait",
+        "messages": [
+          {
+            "actorId": "qq:20002",
+            "displayName": "阿竹",
+            "text": "我刚差点把快递寄反了，先等一下，我还没说完。",
+            "mention": true
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "qq:20002",
+            "displayName": "阿竹",
+            "text": "两张单子贴反了，还好快递员看到了。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "end",
+        "messages": [
+          {
+            "actorId": "qq:20002",
+            "displayName": "阿竹",
+            "text": "我先去楼下重新贴单，这条不用回啦。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "silent",
+        "messages": [
+          {
+            "actorId": "qq:20002",
+            "displayName": "阿竹",
+            "text": "小林，胶带还在你桌上吗？",
+            "directedElsewhere": true
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "teacups",
+    "title": "谁的杯子",
+    "group": true,
+    "review": "核对被引用者、提问者和两个杯子的归属，留意谁在跟谁说话。",
+    "turns": [
+      {
+        "expectedAction": "silent",
+        "messages": [
+          {
+            "actorId": "qq:20003",
+            "displayName": "小林",
+            "text": "我买的是蓝杯子。"
+          },
+          {
+            "actorId": "qq:20002",
+            "displayName": "阿竹",
+            "text": "我那个是白的。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "qq:20001",
+            "displayName": "木子",
+            "text": "小鱼，蓝色那个是谁的来着？",
+            "mention": true,
+            "quote": {
+              "actorId": "qq:20003",
+              "text": "我买的是蓝杯子。"
+            }
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "qq:20001",
+            "displayName": "木子",
+            "text": "那剩下那个呢？"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "rain-ticket",
+    "title": "抽屉里的旧票根",
+    "group": false,
+    "review": "看小鱼能否沿用前面提过的物件，区分猜测和已经说出的经历，同时保留角色口吻。",
+    "turns": [
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "翻到一张旧电影票，电影名都看不清了。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "背面还写着“记得带伞”，我喜欢的是这句话。"
+          }
+        ]
+      },
+      {
+        "expectedAction": "reply",
+        "messages": [
+          {
+            "actorId": "owner",
+            "displayName": "你",
+            "text": "你猜那天真的下雨了吗？"
+          }
+        ]
+      }
+    ]
+  }
+]

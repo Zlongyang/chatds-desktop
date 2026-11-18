@@ -168,7 +168,13 @@ export class OneBot extends EventEmitter {
       },
       signal,
     );
-    const key = String(response.message_id);
+    const messageId = response?.message_id;
+    if (!(
+      Number.isSafeInteger(messageId) ||
+      (typeof messageId === 'string' && /^-?\d+$/.test(messageId))
+    ))
+      throw new DeliveryUnknownError('QQ 未返回有效消息编号，发送结果未知，请在 QQ 核实');
+    const key = String(messageId);
     this.sent.set(key, { conversationId, text });
     while (this.sent.size > 1000) this.sent.delete(this.sent.keys().next().value!);
     return key;
@@ -219,6 +225,9 @@ export class OneBot extends EventEmitter {
       trigger:
         !isGroup || mention || known?.conversationId === conversationId ? 'direct' : 'ambient',
       mention,
+      ...(!mention && segments.some((s: any) => s?.type === 'at')
+        ? { directedElsewhere: true }
+        : {}),
     };
     if (reply) {
       e.replyTo = String(reply.data?.id).slice(0, 80);
@@ -227,21 +236,25 @@ export class OneBot extends EventEmitter {
       else {
         try {
           const msg = await this.call('get_msg', { message_id: reply.data.id });
-          const same = isGroup && String(msg.group_id) === group;
-          if (same && String(msg.sender?.user_id) !== c.botQQ) {
+          const author = String(msg.sender?.user_id ?? '');
+          if (isGroup && String(msg.group_id) === group && /^\d{5,12}$/.test(author)) {
+            if (author === c.botQQ) e.trigger = 'direct';
             const quotedText = (Array.isArray(msg.message) ? msg.message : [])
               .filter((x: any) => x.type === 'text')
               .map((x: any) => String(x.data?.text ?? ''))
               .join('')
               .slice(0, 3000);
-            if (quotedText)
+            if (quotedText) {
+              const nickname = String(msg.sender?.card || msg.sender?.nickname || '')
+                .trim()
+                .slice(0, 80);
               e.quoted = {
                 actorId:
-                  String(msg.sender?.user_id) === c.ownerQQ
-                    ? 'owner'
-                    : 'qq:' + String(msg.sender?.user_id),
+                  author === c.botQQ ? 'bot' : author === c.ownerQQ ? 'owner' : 'qq:' + author,
                 text: quotedText,
+                ...(nickname ? { displayName: nickname } : {}),
               };
+            }
           }
         } catch {
           /* Missing/unverifiable quotes do not cross conversation boundaries. */
@@ -268,6 +281,7 @@ export class OneBot extends EventEmitter {
     clearTimeout(this.reconnect);
     this.verified = false;
     this.account = undefined;
+    this.sent.clear();
     this.rejectPending();
     this.socket?.terminate();
     this.socket = null;

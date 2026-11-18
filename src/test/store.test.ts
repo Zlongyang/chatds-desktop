@@ -1,9 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { Store, memoryScope, searchTerms } from '../runtime/store.js';
 import { envelope, temporary, removeTemporary, assistant } from './helpers.js';
 import type { RunContext } from '../shared/types.js';
+test('history pages use room-local row cursors and delivery updates refresh the displayed receipt', (t) => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const room = 'desktop:owner';
+  for (let i = 0; i < 205; i++) {
+    store.ingest(envelope(String(i), { timestamp: 1000 }));
+    store.ingest(envelope('其他会话', { conversationId: 'onebot:private:22222', timestamp: 1000 }));
+  }
+  const recent = store.history(room, undefined, 101).slice(-100);
+  const middle = store.history(room, recent[0]!.seq, 101).slice(-100);
+  const oldest = store.history(room, middle[0]!.seq, 101);
+  assert.deepEqual(
+    [...oldest, ...middle, ...recent].map((m) => m.text),
+    Array.from({ length: 205 }, (_, i) => String(i)),
+  );
+  const out = store.createOutbox(room, '发送中');
+  store.appendAssistant(room, '发送中', out, 'pending');
+  const before = store.rooms().find((r) => r.id === room)!.updatedAt;
+  store.finishOutbox(out, 'unknown');
+  assert.ok(store.rooms().find((r) => r.id === room)!.updatedAt > before);
+  assert.equal(store.history(room).at(-1)!.status, 'unknown');
+});
 test('SQLite persists facts, keeps people/groups isolated, and deduplicates incoming messages', (t) => {
   const dir = temporary();
   let store = new Store(join(dir, 'state.sqlite'));
@@ -92,6 +115,36 @@ test('Chinese segmentation finds short terms instead of comparing the whole ques
   store.remember(memoryScope(e), 'owner', '我喜欢蓝色饭团', 'preference', [e.id]);
   assert.ok(searchTerms('喜欢什么颜色').includes('喜欢'));
   assert.equal(store.search(memoryScope(e), '喜欢什么颜色')[0]?.content, e.text);
+});
+test('an existing message database gains web receipts without changing earlier replies', (t) => {
+  const directory = temporary();
+  const file = join(directory, 'state.sqlite');
+  let store = new Store(file);
+  t.after(() => {
+    store.close();
+    removeTemporary(directory);
+  });
+  const room = 'desktop:owner';
+  const oldId = store.appendAssistant(room, '旧版回复');
+  store.close();
+  const previous = new DatabaseSync(file);
+  try {
+    previous.exec('ALTER TABLE messages DROP COLUMN web_reads');
+  } finally {
+    previous.close();
+  }
+  store = new Store(file);
+  const receipts = [{ host: 'example.org', status: 'read' as const }];
+  const newId = store.appendAssistant(room, '新版回复', undefined, 'sent', '小鱼', receipts);
+  store.close();
+  store = new Store(file);
+  assert.deepEqual(
+    store.history(room).map((m) => [m.id, m.text, m.webReads]),
+    [
+      [oldId, '旧版回复', undefined],
+      [newId, '新版回复', receipts],
+    ],
+  );
 });
 test('incomplete outbound delivery becomes unknown on restart and is not replayed', (t) => {
   const dir = temporary();

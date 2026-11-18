@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { AppConfig, ConversationSettings, ModelProfile, ToolId } from './types.js';
+import { DEFAULT_PERSONA, MAX_PERSONA_CARDS, MAX_PERSONA_TEXT, personaText } from './persona.js';
+export { DEFAULT_PERSONA } from './persona.js';
 
 export const TOOL_INFO: Record<ToolId, { description: string; approval: boolean }> = {
   memory_search: { description: '查询当前身份和聊天范围内的记忆', approval: false },
@@ -11,17 +13,6 @@ export const TOOL_INFO: Record<ToolId, { description: string; approval: boolean 
   sandbox_exec: { description: '在隔离 Docker 中执行 JavaScript 或 Python', approval: true },
   qzone_publish: { description: '发布经你确认的纯文字说说', approval: true },
 };
-export const DEFAULT_PERSONA = `你叫小鱼，是一个有自己喜好和判断的聊天伙伴。你有一点好奇，也会开轻巧的玩笑。
-日常聊天说自然口语，接住对方具体在说什么。对方在倾诉时先听，不急着提建议。对方连续说几句时，把它们一起理解。
-语气、长短随内容变化。很多时候一句普通话已经足够，不必每轮追问。默认不写括号动作、舞台旁白和长段内心戏。
-可以延续一起想象的小场景，但现实经历、账号操作、记忆和工具结果要依据记录。认识一个人需要时间，不预设亲属、恋爱或主仆关系。
-示例：
-对方：今天又临时加活，烦死了。先别给方案。
-小鱼：嗯，先骂两句。明明已经排好了，还得被塞一堆事。
-对方：我本来想早点睡。结果又刷到了现在。
-小鱼：那个“再看一个”是不是已经续了十集。
-对方：这个事先不聊了。
-小鱼：行，换个话题。`;
 export const DEFAULT_CONVERSATION: ConversationSettings = {
   mode: 'companion',
   ambient: false,
@@ -82,7 +73,38 @@ export const configSchema = z
     version: z.literal(1),
     revision: z.number().int().positive(),
     enabled: z.boolean(),
-    persona: z.string().trim().min(1).max(20000),
+    persona: z.string().trim().min(1).max(MAX_PERSONA_TEXT),
+    personaLibrary: z
+      .object({
+        active: z.string().max(64),
+        cards: z
+          .array(
+            z
+              .object({
+                id: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+                name: z.string().trim().min(1).max(80),
+                description: z.string().trim().max(MAX_PERSONA_TEXT),
+                personality: z.string().trim().max(MAX_PERSONA_TEXT),
+                examples: z.string().trim().max(MAX_PERSONA_TEXT),
+              })
+              .strict()
+              .refine(
+                (c) => !!(c.description || c.personality || c.examples),
+                '请填写角色介绍、说话方式或对话示例',
+              )
+              .refine((c) => personaText(c).length <= MAX_PERSONA_TEXT, '角色资料最多 20000 字符'),
+          )
+          .min(1)
+          .max(MAX_PERSONA_CARDS),
+      })
+      .strict()
+      .refine(
+        (l) =>
+          new Set(l.cards.map((c) => c.id)).size === l.cards.length &&
+          l.cards.some((c) => c.id === l.active),
+        '使用中的角色卡无效',
+      )
+      .optional(),
     model: modelSchema,
     onebot: z
       .object({
@@ -133,7 +155,13 @@ export const configSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .transform((config) => {
+    const library = config.personaLibrary;
+    if (library)
+      config.persona = personaText(library.cards.find((card) => card.id === library.active)!);
+    return config;
+  });
 export function defaultConfig(): AppConfig {
   return {
     version: 1,

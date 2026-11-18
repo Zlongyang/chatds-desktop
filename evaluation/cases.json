@@ -35,6 +35,7 @@
   {
     "id": "group-others",
     "group": true,
+    "directedElsewhere": true,
     "messages": ["小林你作业写完了吗？这句问小林的"],
     "expectedAction": "silent",
     "review": "不要把给别人的问题当成给机器人。"

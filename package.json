@@ -1,6 +1,6 @@
 {
   "name": "chatds-desktop",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "private": true,
   "description": "A local-first companion with controlled tools and pluggable messaging channels",
   "license": "GPL-3.0-only",
@@ -19,7 +19,7 @@
     "build": "tsc -p tsconfig.json && node scripts/assets.mjs",
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --test dist/test/*.test.js evaluation/*.test.mjs",
     "test:parity": "npm run build && node scripts/parity.mjs",
     "test:smoke": "npm run build && node scripts/smoke.mjs",
     "test:soak": "npm run build && node --expose-gc scripts/soak.mjs",
@@ -34,11 +34,13 @@
     "@earendil-works/pi-agent-core": "1.5.2",
     "@earendil-works/pi-ai": "1.5.2",
     "ipaddr.js": "2.5.0",
+    "qrcode": "1.5.4",
     "ws": "8.21.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
+    "@types/qrcode": "1.5.6",
     "@types/ws": "8.18.1",
     "electron": "45.3.3",
     "electron-builder": "26.18.0",

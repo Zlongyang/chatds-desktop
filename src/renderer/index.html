@@ -9,6 +9,7 @@
     />
     <title>ChatDS · 小鱼</title>
     <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="connections.css" />
   </head>
   <body>
     <div class="app">
@@ -26,12 +27,11 @@
       <main>
         <header class="topbar">
           <div>
-            <span class="eyebrow">A LITTLE ROOM FOR CONVERSATION</span>
             <h1 id="page-title">聊聊天</h1>
           </div>
           <div class="top-actions">
             <span id="test-badge" class="badge hidden">隔离测试模式</span
-            ><span id="model-badge" class="badge">尚未配置模型</span
+            ><button id="model-badge" class="badge" title="打开模型配置">配置模型</button
             ><button id="pause" class="subtle">暂停回复</button>
           </div>
         </header>
@@ -49,7 +49,7 @@
                 ><span><strong>桌面聊天</strong><small>在这里直接说</small></span>
               </button>
               <div id="rooms"></div>
-              <div class="room-note">QQ 会话在连接并收到消息后出现。</div>
+              <button id="room-connect" class="room-connect hidden">管理 QQ</button>
             </aside>
             <div class="conversation card">
               <div class="conversation-bar">
@@ -67,6 +67,11 @@
               <div id="group-options" class="group-options hidden">
                 <label><input type="checkbox" id="ambient" />无需 @，允许适时插话</label
                 ><label><input type="checkbox" id="muted" />只同步，保持安静</label>
+              </div>
+              <div id="history-nav" class="history-nav hidden" aria-label="聊天记录翻页">
+                <button type="button" id="history-older" class="subtle">更早的消息</button>
+                <button type="button" id="history-newer" class="subtle">较新的消息</button>
+                <button type="button" id="history-latest" class="subtle">回到最新</button>
               </div>
               <div id="messages">
                 <div class="empty">
@@ -86,6 +91,7 @@
                 ></textarea>
                 <div class="composer-foot">
                   <small id="chat-hint">Enter 发送，Shift + Enter 换行</small
+                  ><button type="button" id="chat-setup" class="hidden">配置聊天模型</button
                   ><button id="send" class="primary" type="submit">发送 <span>↑</span></button>
                 </div>
               </form>
@@ -97,56 +103,136 @@
           </details>
         </section>
         <section id="page-connections" class="page hidden">
-          <div class="page-grid">
+          <article class="card padded napcat-environment">
+            <div class="section-heading">
+              <h2>本机 NapCat（可选）</h2>
+              <span id="napcat-environment-state" class="badge">未选择目录</span>
+            </div>
+            <p id="napcat-directory-label">NapCat 安装目录</p>
+            <p id="napcat-directory" aria-labelledby="napcat-directory-label">尚未选择</p>
+            <div class="row">
+              <button id="napcat-installation" class="primary">选择安装目录</button>
+              <button id="napcat-launch" class="hidden">启动 NapCat</button>
+              <button id="napcat-check" class="hidden">检查 WebUI</button>
+              <button id="napcat-forget" class="subtle hidden">取消关联</button>
+              <button id="napcat-guide" class="subtle">NapCat 安装指南</button>
+            </div>
+            <p id="napcat-environment-note" role="status" aria-live="polite" class="muted">
+              已安装 NapCat？选择它在这台电脑上的文件夹。
+            </p>
+          </article>
+          <div class="page-grid" id="qq-layout">
             <article class="card padded">
               <div class="section-heading">
-                <h2>连接 QQ</h2>
+                <h2 id="qq-section-title">其他接入方式</h2>
                 <span id="qq-status" class="badge">未连接</span>
               </div>
-              <p class="muted">
-                自行安装并登录 NapCat 或其他兼容 OneBot v11 的服务，再填入连接信息。
-              </p>
-              <form id="onebot-form">
-                <label
-                  >WebSocket 地址<input id="qq-url" placeholder="ws://127.0.0.1:3001" required
-                /></label>
-                <div class="two">
+              <div id="qq-linked" class="hidden">
+                <p id="qq-account"></p>
+                <div class="row">
+                  <button type="button" id="qq-reconnect">重新连接</button>
+                  <button type="button" id="disconnect">断开连接</button>
+                  <button type="button" id="qq-switch" class="subtle">重新绑定 NapCat</button>
+                </div>
+              </div>
+              <div id="napcat-entry">
+                <p id="napcat-login-hint">
+                  启动 NapCat 后，用机器人账号的手机 QQ 扫码。也可以临时选择目录。
+                </p>
+                <button type="button" id="napcat-choose" class="primary">扫码登录 QQ</button>
+                <details class="qq-details" id="napcat-alternative">
+                  <summary>使用本机 WebUI 登录链接</summary>
+                  <form id="napcat-link-form">
+                    <label
+                      >NapCat 启动窗口中的 WebUI 链接<input
+                        type="password"
+                        id="napcat-link"
+                        autocomplete="off"
+                        required
+                        placeholder="含 token 的本机登录链接"
+                    /></label>
+                    <button type="submit">读取登录状态</button>
+                  </form>
+                </details>
+              </div>
+              <div id="napcat-flow" class="hidden">
+                <p id="napcat-state" role="status" aria-live="polite"></p>
+                <img
+                  id="napcat-qr"
+                  class="hidden"
+                  width="200"
+                  height="200"
+                  alt="请用机器人账号的手机 QQ 扫描此登录码"
+                />
+                <form id="napcat-bind" class="hidden">
                   <label
-                    >机器人 QQ<input id="bot-qq" inputmode="numeric" autocomplete="off" /></label
-                  ><label
-                    >主号 QQ<input id="owner-qq" inputmode="numeric" autocomplete="off"
+                    >你的个人 QQ 号<input
+                      id="napcat-owner"
+                      required
+                      inputmode="numeric"
+                      pattern="[0-9]{5,12}"
+                      maxlength="12"
+                      autocomplete="off"
+                      placeholder="平时用来和小鱼聊天的账号"
                   /></label>
+                  <p class="footnote">
+                    这个账号的私聊会和桌面共用记忆。连接时会为 ChatDS
+                    准备本机消息接口，之后随应用自动连接。
+                  </p>
+                  <button id="napcat-finish" type="submit" class="primary">连接这个 QQ</button>
+                </form>
+                <div class="row">
+                  <button type="button" id="napcat-renew" class="hidden">刷新二维码</button>
+                  <button type="button" id="napcat-retry" class="hidden">重试</button>
+                  <button type="button" id="napcat-cancel" class="subtle">取消</button>
                 </div>
-                <label
-                  >Access Token<input
-                    type="password"
-                    id="qq-token"
-                    autocomplete="new-password"
-                    placeholder="留空保留已存令牌" /></label
-                ><small id="qq-token-status" class="muted"></small
-                ><label
-                  >允许私聊的其他 QQ 号<input
-                    id="qq-users"
-                    placeholder="多个号码用逗号分隔" /></label
-                ><label
-                  >允许接入的群号<input
-                    id="qq-groups"
-                    placeholder="未加入白名单的群消息不会进入模型" /></label
-                ><label class="check"
-                  ><input type="checkbox" id="qq-enabled" />随应用自动连接</label
-                >
-                <div class="row end">
-                  <button type="button" id="disconnect">断开</button
-                  ><button class="primary" type="submit">保存连接信息</button
-                  ><button type="button" id="connect">连接</button>
-                </div>
-              </form>
-              <p class="footnote">
-                主号可用 /状态 与 /停止。工具权限在桌面修改。远程连接需要 wss 加密。
-              </p>
+              </div>
+              <p id="qq-error" role="alert" class="hidden"></p>
+              <details class="qq-details" id="manual-onebot">
+                <summary>手动连接 OneBot 服务</summary>
+                <form id="onebot-form">
+                  <label
+                    >WebSocket 地址<input id="qq-url" placeholder="ws://127.0.0.1:3001" required
+                  /></label>
+                  <div class="two">
+                    <label
+                      >机器人 QQ<input id="bot-qq" inputmode="numeric" autocomplete="off" /></label
+                    ><label
+                      >主号 QQ<input id="owner-qq" inputmode="numeric" autocomplete="off"
+                    /></label>
+                  </div>
+                  <label
+                    >Access Token<input
+                      type="password"
+                      id="qq-token"
+                      autocomplete="new-password"
+                      placeholder="留空保留已存令牌" /></label
+                  ><small id="qq-token-status" class="muted"></small
+                  ><label class="check"
+                    ><input type="checkbox" id="qq-enabled" />随应用自动连接</label
+                  >
+                  <div class="row end">
+                    <button class="primary" type="submit">保存并连接</button>
+                  </div>
+                </form>
+                <p class="footnote">使用 OneBot v11 正向 WebSocket 服务，远程地址需要 wss 加密。</p>
+              </details>
             </article>
-            <div>
+            <div id="qq-management" class="hidden">
               <article class="card padded">
+                <h2>谁可以和小鱼聊天</h2>
+                <p class="muted">默认只接收你的主号私聊。</p>
+                <form id="qq-access">
+                  <label
+                    >其他允许私聊的 QQ 号<input id="qq-users" placeholder="多个号码用逗号分隔"
+                  /></label>
+                  <label
+                    >允许接入的群号<input id="qq-groups" placeholder="多个群号用逗号分隔"
+                  /></label>
+                  <button type="submit">保存名单</button>
+                </form>
+              </article>
+              <article class="card padded spaced">
                 <h2>好友申请</h2>
                 <div id="friends" class="stack"><p class="muted">没有待处理申请。</p></div>
               </article>
@@ -180,29 +266,65 @@
         <section id="page-persona" class="page hidden">
           <article class="card padded">
             <div class="section-heading">
-              <div>
-                <h2>它是怎样的小鱼</h2>
-                <p class="muted">描述性格、喜好和说话方式。真实用户信息由记忆保存。</p>
+              <h2>我的角色卡</h2>
+              <div class="row">
+                <button type="button" id="new-persona">新建</button>
+                <button type="button" id="import-persona">导入酒馆 JSON</button>
+                <input type="file" id="persona-file" accept=".json,application/json" hidden />
               </div>
-              <span id="persona-count" class="muted"></span>
             </div>
-            <textarea
-              id="persona"
-              class="persona"
-              maxlength="20000"
-              spellcheck="false"
-              aria-label="人设"
-            ></textarea>
-            <div class="row between">
-              <small class="muted">保存后会用于后续回复。人设不改变工具权限。</small
-              ><button id="save-persona" class="primary">保存人设</button>
-            </div>
+            <label>选择角色卡<select id="persona-list"></select></label>
+            <form id="persona-form">
+              <label
+                >角色名字<input
+                  id="persona-name"
+                  required
+                  maxlength="80"
+                  placeholder="对话中显示的名字"
+              /></label>
+              <label
+                >角色介绍<textarea
+                  id="persona"
+                  rows="3"
+                  maxlength="20000"
+                  placeholder="它是谁，有什么喜好？"
+                ></textarea>
+              </label>
+              <label
+                >说话方式<textarea
+                  id="persona-style"
+                  rows="3"
+                  maxlength="20000"
+                  placeholder="比如：有点慢热，偶尔吐槽，倾听时不急着给建议。"
+                ></textarea>
+              </label>
+              <label
+                >对话示例<textarea
+                  id="persona-examples"
+                  rows="3"
+                  maxlength="20000"
+                  placeholder="写下你觉得像它的一两句对话。"
+                ></textarea>
+              </label>
+              <details class="persona-preview">
+                <summary>预览模型将读到的角色资料</summary>
+                <pre id="persona-preview"></pre>
+              </details>
+              <div class="row between persona-actions">
+                <small id="persona-status" class="muted" role="status"></small>
+                <div class="row">
+                  <button type="button" id="delete-persona">删除这张卡</button>
+                  <button type="button" id="revert-persona">撤销编辑</button>
+                  <button type="submit" id="save-persona" class="primary">保存并使用</button>
+                </div>
+              </div>
+            </form>
           </article>
         </section>
         <section id="page-tools" class="page hidden">
           <div class="page-grid">
             <article class="card padded">
-              <h2>可以做的事</h2>
+              <h2>全局工具权限</h2>
               <p class="muted">
                 任务工具只对受控助理模式下的主号桌面／私聊开放。写入、执行和发布都需要逐次确认。
               </p>
@@ -233,64 +355,108 @@
           </div>
         </section>
         <section id="page-settings" class="page hidden">
-          <article class="card padded setup">
-            <span class="eyebrow">FIRST, MAKE A CONNECTION</span>
-            <h2>先连上模型，再开始聊天</h2>
-            <p class="muted">你提供的密钥加密保存在本机。QQ 可以稍后连接。</p>
-            <form id="model-form">
-              <div class="two">
-                <label
-                  >接口类型<select id="provider">
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="openai-compatible">其他 OpenAI 兼容接口</option>
-                  </select></label
-                ><label>模型名称<input id="model-id" required /></label>
+          <div class="page-grid setup-grid">
+            <article class="card padded setup">
+              <div class="section-heading">
+                <h2>聊天模型</h2>
+                <span id="model-status" class="badge">待配置</span>
               </div>
-              <label>接口地址<input id="base-url" type="url" required /></label
-              ><label
-                >API Key<input
-                  type="password"
-                  id="api-key"
-                  autocomplete="new-password"
-                  placeholder="仅写入；留空保留当前地址的密钥" /></label
-              ><small id="key-status" class="muted"></small>
-              <div class="two">
-                <label
-                  >上下文窗口<input
-                    id="context-window"
-                    type="number"
-                    min="4096"
-                    max="2000000"
-                    required /></label
-                ><label
-                  >最大输出 tokens<input
-                    id="output-tokens"
-                    type="number"
-                    min="128"
-                    max="32768"
-                    required
-                /></label>
+              <div id="model-summary" class="hidden">
+                <dl class="model-profile">
+                  <dt>当前模型</dt>
+                  <dd id="current-model"></dd>
+                  <dt>接口地址</dt>
+                  <dd id="current-endpoint"></dd>
+                  <dt>API Key</dt>
+                  <dd id="current-key"></dd>
+                </dl>
+                <div class="row model-controls">
+                  <button id="setup-chat" class="primary">去桌面聊天</button>
+                  <button id="model-edit">修改配置</button>
+                  <button id="model-retest">测试连接</button>
+                </div>
+                <p class="model-cost muted">测试连接会向当前模型发送一次请求。</p>
               </div>
-              <div class="two">
-                <label
-                  >任务模式思考强度<select id="thinking">
-                    <option value="off">关闭</option>
-                    <option value="low">较低</option>
-                    <option value="high">较高</option>
-                  </select></label
-                ><label class="check"
-                  ><input type="checkbox" id="key-required" />接口需要 API Key</label
-                >
-              </div>
-              <div class="row end">
-                <button type="button" id="model-test">测试连接</button
-                ><button type="submit" class="primary">保存模型</button>
-              </div>
-            </form>
-            <p class="footnote">
-              纯陪伴默认关闭思考模式。更换接口地址不会自动向新地址发送旧密钥。连接测试会调用一次所选模型。
-            </p>
-          </article>
+              <form id="model-form" class="hidden">
+                <fieldset id="model-fields">
+                  <label
+                    >模型服务<select id="provider">
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="local">本机模型服务</option>
+                      <option value="openai-compatible">其他 OpenAI 兼容服务</option>
+                    </select></label
+                  >
+                  <details id="endpoint-options" class="model-options">
+                    <summary>接口地址与模型名称</summary>
+                    <label>接口地址<input id="base-url" type="url" required /></label>
+                    <label>模型名称<input id="model-id" maxlength="128" required /></label>
+                  </details>
+                  <label id="model-key-label"
+                    >API Key<input
+                      type="password"
+                      id="api-key"
+                      autocomplete="new-password"
+                      maxlength="1000"
+                      aria-describedby="key-status"
+                  /></label>
+                  <small id="key-status" class="muted"></small>
+                  <button type="button" id="model-replace-key" class="subtle hidden">
+                    更换密钥
+                  </button>
+                  <details class="model-options" id="model-advanced">
+                    <summary>高级选项</summary>
+                    <div class="two">
+                      <label
+                        >上下文窗口<input
+                          id="context-window"
+                          type="number"
+                          min="4096"
+                          max="2000000"
+                          required /></label
+                      ><label
+                        >最大输出 tokens<input
+                          id="output-tokens"
+                          type="number"
+                          min="128"
+                          max="32768"
+                          required
+                      /></label>
+                    </div>
+                    <div class="two">
+                      <label
+                        >任务模式思考强度<select id="thinking">
+                          <option value="off">关闭</option>
+                          <option value="low">较低</option>
+                          <option value="high">较高</option>
+                        </select></label
+                      ><label class="check"
+                        ><input type="checkbox" id="key-required" />接口需要 API Key</label
+                      >
+                    </div>
+                  </details>
+                  <p class="model-cost muted">测试会向填写的接口发送一次请求。通过后启用此配置。</p>
+                  <div class="row end model-actions">
+                    <button type="submit" id="model-test" class="primary">测试通过后保存</button>
+                    <button type="submit" id="model-save">仅保存</button>
+                    <button type="button" id="model-cancel" class="subtle hidden">取消修改</button>
+                  </div>
+                </fieldset>
+              </form>
+              <p id="model-result" class="model-result hidden" role="status"></p>
+            </article>
+            <div class="setup-choices">
+              <article class="card padded">
+                <h2>NapCat 与 QQ</h2>
+                <p class="muted" id="setup-qq-status">尚未关联本机 NapCat 安装目录。</p>
+                <button id="setup-qq">配置 NapCat（可选）</button>
+              </article>
+              <article class="card padded">
+                <h2>小鱼人设</h2>
+                <p class="muted" id="setup-persona-status">正在使用「小鱼」角色卡。</p>
+                <button id="setup-persona">编辑小鱼人设</button>
+              </article>
+            </div>
+          </div>
           <div class="page-grid spaced">
             <article class="card padded">
               <h2>本机与记忆</h2>
@@ -307,8 +473,11 @@
             <article class="card padded">
               <h2>使用边界</h2>
               <p class="muted">
-                关闭窗口后留在系统托盘。完全退出请使用托盘菜单。只有白名单消息会进入模型；群内无需 @
-                模式需逐群开启。
+                关闭窗口后留在系统托盘。完全退出请使用托盘菜单。<span
+                  id="qq-boundary"
+                  class="hidden"
+                  >只有白名单消息会进入模型，群内无需 @ 模式需逐群开启。</span
+                >
               </p>
               <p class="muted">
                 记忆是可纠正的资料。删除一条记忆会排除其旧来源和相关摘要，原始聊天记录仍可查看。

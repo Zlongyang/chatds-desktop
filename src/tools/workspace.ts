@@ -39,11 +39,23 @@ export async function workspacePath(root: string, input: string): Promise<string
   }
   return target;
 }
+function workspaceError(error: unknown, input: string): Error {
+  if (!(error instanceof Error)) throw error;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  if (!code || !syscall) return error;
+  const reason = code === 'ENOENT' ? '工作区文件不存在' : '工作区文件操作失败';
+  return new Error(`${reason}（${code}） ${input}`);
+}
 export async function readWorkspace(root: string, input: string): Promise<string> {
-  const file = await workspacePath(root, input);
-  const info = await lstat(file);
-  if (!info.isFile() || info.size > 256 * 1024) throw new Error('只能读取 256 KiB 以内的普通文件');
-  return (await readFile(file, 'utf8')).slice(0, 30000);
+  try {
+    const file = await workspacePath(root, input);
+    const info = await lstat(file);
+    if (!info.isFile() || info.size > 256 * 1024)
+      throw new Error('只能读取 256 KiB 以内的普通文件');
+    return (await readFile(file, 'utf8')).slice(0, 30000);
+  } catch (error) {
+    throw workspaceError(error, input);
+  }
 }
 export async function writeWorkspace(
   root: string,
@@ -52,16 +64,19 @@ export async function writeWorkspace(
   beforeCommit: () => void = () => {},
 ): Promise<void> {
   if (Buffer.byteLength(content) > 100000) throw new Error('写入内容超过 100 KiB');
-  const target = await workspacePath(root, input);
-  await mkdir(dirname(target), { recursive: true });
-  await workspacePath(root, input);
-  const temporary = join(dirname(target), '.chatds-' + randomUUID() + '.tmp');
+  let temporary: string | undefined;
   try {
-    await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
-    beforeCommit();
+    const target = await workspacePath(root, input);
+    await mkdir(dirname(target), { recursive: true });
     await workspacePath(root, input);
+    temporary = join(dirname(target), '.chatds-' + randomUUID() + '.tmp');
+    await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
+    await workspacePath(root, input);
+    beforeCommit();
     await rename(temporary, target);
+  } catch (error) {
+    throw workspaceError(error, input);
   } finally {
-    await unlink(temporary).catch(() => {});
+    if (temporary) await unlink(temporary).catch(() => {});
   }
 }

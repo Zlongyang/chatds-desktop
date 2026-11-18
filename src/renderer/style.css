@@ -332,6 +332,70 @@ input[type='checkbox'] {
 .setup form {
   margin-top: 22px;
 }
+.setup-grid {
+  align-items: start;
+}
+.setup-choices {
+  display: grid;
+  gap: 15px;
+}
+.setup-choices p {
+  font-size: 13px;
+}
+#model-fields {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.model-options {
+  margin: 16px 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0 0 12px;
+}
+.model-options summary {
+  color: #536c74;
+  font-size: 12px;
+  cursor: pointer;
+}
+.model-cost,
+.model-result {
+  font-size: 12px;
+}
+.model-result {
+  margin: 16px 0 10px;
+  overflow-wrap: anywhere;
+}
+.model-result.error {
+  color: #924733;
+}
+.model-actions {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.model-controls {
+  flex-wrap: wrap;
+}
+.model-profile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px 20px;
+  margin: 18px 0 24px;
+  font-size: 13px;
+}
+.model-profile dt {
+  color: var(--muted);
+}
+.model-profile dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.room-connect {
+  margin: 12px 8px 0;
+  padding: 6px 11px;
+  font-size: 12px;
+}
 .chat-layout {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
@@ -438,6 +502,11 @@ input[type='checkbox'] {
   margin: 8px 0;
   font-size: 10px;
 }
+.history-nav {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
 #messages {
   overflow: auto;
   padding: 24px 27px;
@@ -515,6 +584,15 @@ input[type='checkbox'] {
   font-size: 10px;
   color: #b48156;
   margin-top: 5px;
+}
+.web-receipts {
+  list-style: none;
+  padding: 0;
+  margin: 5px 2px 0;
+  color: #526a72;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .draft {
   margin: 0 24px 10px;
@@ -637,14 +715,27 @@ input[type='checkbox'] {
   padding: 4px 7px;
   border-radius: 5px;
 }
-.persona {
-  min-height: calc(100vh - 320px);
-  line-height: 1.9;
-  font-size: 13px;
-  padding: 20px;
+#persona-form textarea {
+  line-height: 1.6;
   resize: vertical;
-  background: #fcfdfb;
-  margin: 22px 0;
+}
+.persona-preview {
+  color: var(--muted);
+  margin: 18px 0;
+}
+.persona-preview summary {
+  cursor: pointer;
+}
+.persona-preview pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--soft);
+  padding: 14px;
+  border-radius: 8px;
+  font: inherit;
+}
+.persona-actions {
+  flex-wrap: wrap;
 }
 .tool-row {
   display: flex;

@@ -48,7 +48,7 @@ test('approval revocation prevents file effect and releases pending confirmation
 test('approved exact action writes only its own workspace and cannot forge identity in arguments', async (t) => {
   const directory = temporary();
   t.after(() => removeTemporary(directory));
-  const c = defaultConfig();
+  let c = defaultConfig();
   c.conversations['desktop:owner'] = { mode: 'assistant', ambient: false, muted: false };
   c.tools.write_file = true;
   const source = envelope('写文件');
@@ -68,6 +68,15 @@ test('approved exact action writes only its own workspace and cannot forge ident
   await until(() => broker.pendingApprovals.length === 1);
   const view = broker.pendingApprovals[0]!;
   assert.ok(view.detail.includes('hello.txt'));
+  c = {
+    ...c,
+    revision: c.revision + 1,
+    conversations: {
+      ...c.conversations,
+      'onebot:private:10001': { mode: 'companion', muted: true, ambient: false },
+    },
+  };
+  broker.cancel('onebot:private:10001');
   broker.answer(view.id, true);
   await pending;
   const workspace = join(directory, 'workspaces', digest('person:owner').slice(0, 32));

@@ -109,7 +109,7 @@ peer.handle('state', () => ({
   usage: runtime().store.usage(stableDay()),
   stats: runtime().stats,
 }));
-peer.handle('history', (p) => runtime().store.history(p.id, p.before));
+peer.handle('history', (p) => runtime().store.history(p.id, p.before, p.limit));
 peer.handle('memories', (p) => runtime().store.facts(p?.scope));
 peer.handle('forget', (p) => {
   runtime().stop();

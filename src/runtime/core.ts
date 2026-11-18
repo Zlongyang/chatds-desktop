@@ -9,8 +9,10 @@ import type {
   RunContext,
   RuntimeEvent,
   ToolId,
+  WebReadReceipt,
 } from '../shared/types.js';
 import { DEFAULT_CONVERSATION, errorText, TOOL_INFO } from '../shared/config.js';
+import { activePersonaName } from '../shared/persona.js';
 import { boundText, checkAbort, id, Semaphore, stableDay } from '../shared/util.js';
 import { toolArguments, toolSchema } from '../shared/tools.js';
 import { piModel } from '../shared/model-definition.js';
@@ -19,6 +21,8 @@ import { MessageDebouncer } from './debounce.js';
 import { batchText, composePrompt, estimateTokens, trimContext } from './prompt.js';
 import { MemoryWorker, explicitFact } from './memory.js';
 import type { RuntimeHost } from './host.js';
+import { captureWebRead } from './web-receipt.js';
+import { conversationsToStop } from './policy.js';
 
 interface Room {
   id: string;
@@ -96,12 +100,13 @@ export class RuntimeCore extends EventEmitter {
     const previous = this.config;
     this.config = structuredClone(config);
     this.limiter.limit = config.limits.foreground;
-    const changedPolicy =
-      JSON.stringify({ ...previous, persona: '', revision: 0 }) !==
-      JSON.stringify({ ...config, persona: '', revision: 0 });
-    if (changedPolicy) this.stop();
-    this.memory.cancel();
-    this.memory.start();
+    const affected = conversationsToStop(previous, config);
+    if (affected === 'all') {
+      this.stop();
+      this.memory.start();
+    } else {
+      for (const room of affected) this.stop(room);
+    }
     this.changed();
   }
   ingest(message: MessageEnvelope): boolean {
@@ -113,13 +118,21 @@ export class RuntimeCore extends EventEmitter {
     if (!this.config.enabled || this.config.conversations[message.conversationId]?.muted)
       return true;
     let room = this.rooms.get(message.conversationId);
+    const latest =
+      room?.pending.at(-1) ?? (room?.controller?.signal.aborted ? undefined : room?.batch.at(-1));
     const continuation =
-      !!room && room.focusActor === message.actorId && room.focusUntil > this.now();
+      !message.replyTo &&
+      !message.directedElsewhere &&
+      (latest
+        ? latest.actorId === message.actorId && latest.trigger !== 'ambient'
+        : room?.focusActor === message.actorId && room.focusUntil > this.now());
     if (continuation && message.trigger === 'ambient')
       message = { ...message, trigger: 'continuation' };
     const ambient = message.isGroup && message.trigger === 'ambient';
     if (ambient && !this.config.conversations[message.conversationId]?.ambient) return true;
     if (ambient) {
+      if (message.directedElsewhere || message.replyTo || (latest && latest.trigger !== 'ambient'))
+        return true;
       if (room && this.now() - room.lastAmbientCheck < 60000) return true;
       const hour = Math.floor(this.now() / 3600000),
         key = `check:${message.conversationId}:${hour}`;
@@ -170,9 +183,12 @@ export class RuntimeCore extends EventEmitter {
     room.pending.push(message);
     if (
       room.agent &&
+      !room.controller?.signal.aborted &&
       !room.committing &&
       (this.config.conversations[room.id]?.mode ?? 'companion') === 'companion' &&
-      (room.focusActor === message.actorId || message.mention || !message.isGroup)
+      (room.batch.at(-1)?.actorId === message.actorId ||
+        message.trigger === 'direct' ||
+        !message.isGroup)
     ) {
       const urgent = /^(?:等等|等一下|不是|先别|别回|算了|停止)/.test(message.text);
       if (room.restarts < 1 || urgent) {
@@ -270,6 +286,7 @@ export class RuntimeCore extends EventEmitter {
       this.phase(room, 'recalling');
       const saved = this.memory.capture(batch);
       const usedFacts = new Set<string>(saved);
+      const webReads: WebReadReceipt[] = [];
       let decision: Decision | undefined;
       let count = 0;
       const toolsFor = (snapshot: CapabilitySnapshot): AgentTool<any>[] => {
@@ -304,13 +321,14 @@ export class RuntimeCore extends EventEmitter {
                     [source.id],
                   );
                   this.changed();
-                } else
-                  value = await this.host.tool(
-                    current.id,
-                    tool.id,
-                    args,
-                    signal ?? controller.signal,
-                  );
+                } else {
+                  const invoke = () =>
+                    this.host.tool(current.id, tool.id, args, signal ?? controller.signal);
+                  value =
+                    tool.id === 'web_read'
+                      ? await captureWebRead(webReads, args.url, invoke)
+                      : await invoke();
+                }
                 return {
                   content: [
                     {
@@ -380,6 +398,7 @@ export class RuntimeCore extends EventEmitter {
         return tools;
       };
       let runTools = toolsFor(cap);
+      let replyName = activePersonaName(this.config);
       const priorRuns = this.store.contextRuns(room.id);
       const prior = priorRuns.flatMap((r) => r.messages);
       for (const fact of priorRuns.flatMap((r) => r.factRefs)) usedFacts.add(fact);
@@ -426,8 +445,14 @@ export class RuntimeCore extends EventEmitter {
               ? this.store
                   .recentEnvelopes(room.id, 20)
                   .filter((m) => !batch.some((x) => x.id === m.id))
-                  .map((m) => ({ actor: m.actorId, text: m.text.slice(0, 400), quoted: m.quoted }))
+                  .map((m) => ({
+                    actor: m.actorId,
+                    name: m.displayName,
+                    text: m.text.slice(0, 400),
+                    quoted: m.quoted,
+                  }))
               : [];
+            replyName = activePersonaName(this.config);
             const system =
               composePrompt(this.config.persona, cap, facts, this.store.getSummary(room.id)) +
               '\n【已完成的本轮记忆保存】\n' +
@@ -480,7 +505,6 @@ export class RuntimeCore extends EventEmitter {
         },
       });
       room.agent = agent;
-      room.focusActor = batch.at(-1)!.actorId;
       room.draft = '';
       room.error = undefined;
       this.phase(room, 'generating');
@@ -547,7 +571,7 @@ export class RuntimeCore extends EventEmitter {
           this.phase(room, 'sending');
           if (current.channel === 'onebot') {
             const outbox = this.store.createOutbox(room.id, text);
-            this.store.appendAssistant(room.id, text, outbox, 'pending');
+            this.store.appendAssistant(room.id, text, outbox, 'pending', replyName, webReads);
             this.changed();
             try {
               const remoteId = await this.host.send(current.id, text, outbox, controller.signal);
@@ -559,14 +583,19 @@ export class RuntimeCore extends EventEmitter {
               );
               throw e;
             }
-          } else this.store.appendAssistant(room.id, text);
-          room.focusUntil = this.now() + 120000;
+          } else this.store.appendAssistant(room.id, text, undefined, 'sent', replyName, webReads);
           if (ambient)
             this.store.quota(
               `reply:${room.id}:${Math.floor(this.now() / 3600000)}`,
               this.config.limits.ambientRepliesPerHour,
               true,
             );
+        }
+        if (decision.action === 'reply' || (decision.action === 'wait' && !ambient)) {
+          room.focusActor = batch.at(-1)!.actorId;
+          room.focusUntil = this.now() + 120000;
+        } else if (!ambient || room.focusActor === batch.at(-1)!.actorId) {
+          room.focusUntil = 0;
         }
         this.store.saveRun(current, wire, 'complete', [...usedFacts]);
         this.memory.enqueue(batch);

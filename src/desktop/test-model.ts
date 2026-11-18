@@ -2,12 +2,14 @@ import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi
 import type { ModelRequest } from './model.js';
 /** Only selected by an explicit test flag and a disposable OS-temp data directory. */
 export class TestModelHost {
+  constructor(private readonly model?: string) {}
   async stream(
     request: ModelRequest,
     emit: (event: AssistantMessageEvent) => void,
     signal: AbortSignal,
   ): Promise<AssistantMessage> {
     if (signal.aborted) throw new Error('已取消');
+    if (this.model === 'fixture-unavailable') throw new Error('测试模型暂不可用');
     const user = request.context.messages.filter((m) => m.role === 'user').at(-1);
     const text =
       typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content ?? []);

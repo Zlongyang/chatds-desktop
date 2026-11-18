@@ -12,7 +12,7 @@ import type {
   ToolId,
 } from '../shared/types.js';
 import { toolArguments } from '../shared/tools.js';
-import { capabilities, effectiveMode, toolDenial } from '../runtime/policy.js';
+import { capabilities, conversationsToStop, effectiveMode, toolDenial } from '../runtime/policy.js';
 import type { SkillRegistry } from './skills.js';
 import type { DockerSandbox } from './docker.js';
 import type { OneBot } from '../connectors/onebot.js';
@@ -28,7 +28,7 @@ export class ToolBroker extends EventEmitter {
     readonly skills: SkillRegistry,
     readonly sandbox: DockerSandbox,
     private source: (key: string) => MessageEnvelope | undefined,
-    private onebot: Pick<OneBot, 'call'>,
+    private onebot: Pick<OneBot, 'call'> & Partial<Pick<OneBot, 'status' | 'account'>>,
   ) {
     super();
   }
@@ -68,12 +68,16 @@ export class ToolBroker extends EventEmitter {
     this.context(runId);
     return this.runs.get(runId)!.controller.signal;
   }
+  private get verifiedQQ(): string | undefined {
+    return this.onebot.status === 'online' ? this.onebot.account : undefined;
+  }
   async snapshot(runId: string): Promise<CapabilitySnapshot> {
     return capabilities(
       this.config(),
       this.context(runId),
       await this.skills.list(),
       this.sandbox.state.available,
+      this.verifiedQQ,
     );
   }
   finish(runId: string): void {
@@ -103,7 +107,13 @@ export class ToolBroker extends EventEmitter {
     checkAbort(signal);
     const r = this.runs.get(run.id);
     if (!r || r.controller.signal.aborted) throw new Error('运行已取消');
-    const reason = toolDenial(this.config(), run, tool, this.sandbox.state.available);
+    const reason = toolDenial(
+      this.config(),
+      run,
+      tool,
+      this.sandbox.state.available,
+      this.verifiedQQ,
+    );
     if (reason) throw new Error(reason);
   }
   private confirm(
@@ -114,7 +124,8 @@ export class ToolBroker extends EventEmitter {
   ): Promise<void> {
     this.guard(run, tool, signal);
     return new Promise((resolve, reject) => {
-      const revision = this.config().revision,
+      const original = this.config(),
+        revision = original.revision,
         approvalId = id(),
         fingerprint = digest({ runId: run.id, tool, args, revision });
       const view: Approval = {
@@ -138,9 +149,12 @@ export class ToolBroker extends EventEmitter {
         this.emit('change');
         try {
           this.guard(run, tool, signal);
+          const changes =
+            this.config().revision === revision ? [] : conversationsToStop(original, this.config());
           if (
             !allow ||
-            this.config().revision !== revision ||
+            changes === 'all' ||
+            changes.includes(run.conversationId) ||
             Date.now() > view.expiresAt ||
             digest({ runId: run.id, tool, args, revision }) !== fingerprint
           )
@@ -180,7 +194,6 @@ export class ToolBroker extends EventEmitter {
       'workspaces',
       digest(run.isGroup ? run.conversationId : 'person:' + run.actorId).slice(0, 32),
     );
-    await mkdir(workspace, { recursive: true });
     const guard = () => this.guard(run, tool, signal);
     switch (tool) {
       case 'skills_load':
@@ -199,6 +212,7 @@ export class ToolBroker extends EventEmitter {
       case 'web_read':
         return webRead(args.url, signal);
       case 'sandbox_exec':
+        await mkdir(workspace, { recursive: true });
         return this.sandbox.execute(workspace, args, signal);
       case 'qzone_publish':
         return this.publish(run, args.content, signal);
@@ -207,56 +221,83 @@ export class ToolBroker extends EventEmitter {
     }
   }
   private async publish(run: RunContext, content: string, signal: AbortSignal): Promise<unknown> {
-    const { cookies } = await this.onebot.call(
-      'get_cookies',
-      { domain: 'user.qzone.qq.com' },
-      signal,
-    );
-    const cookie = String(cookies ?? '');
+    this.guard(run, 'qzone_publish', signal);
+    let cookie: string;
+    try {
+      const data = await this.onebot.call('get_cookies', { domain: 'user.qzone.qq.com' }, signal);
+      cookie = typeof data?.cookies === 'string' ? data.cookies : '';
+    } catch {
+      this.guard(run, 'qzone_publish', signal);
+      throw new Error('OneBot 获取 QQ 空间凭据失败，请检查接入端是否支持 get_cookies');
+    }
     const key = /(?:^|;\s*)p_skey=([^;]+)/.exec(cookie)?.[1];
     if (!key) throw new Error('当前 OneBot 未提供可用的 QQ 空间凭据');
     let hash = 5381;
     for (const character of key) hash = (hash + (hash << 5) + character.charCodeAt(0)) >>> 0;
     this.guard(run, 'qzone_publish', signal);
     const botQQ = this.config().onebot.botQQ;
-    const response = await fetch(
-      'https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6?g_tk=' +
-        (hash & 0x7fffffff),
-      {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          Cookie: cookie,
-          Origin: 'https://user.qzone.qq.com',
-          Referer: `https://user.qzone.qq.com/${botQQ}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          con: content,
-          hostuin: botQQ,
-          format: 'json',
-          ugc_right: '1',
-          who: '1',
-          syn_tweet_verson: '1',
-          paramstr: '1',
-          feedversion: '1',
-          ver: '1',
-        }),
-        signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
-      },
-    );
-    const text = (await response.text()).slice(0, 16000);
-    let result: any;
+    let response: Response;
+    let result: { code?: unknown; tid?: unknown; t1?: unknown };
+    const unknown = '发布结果未知，请先查看空间；没有自动重试';
     try {
+      response = await fetch(
+        'https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6?g_tk=' +
+          (hash & 0x7fffffff),
+        {
+          method: 'POST',
+          redirect: 'error',
+          headers: {
+            Cookie: cookie,
+            Origin: 'https://user.qzone.qq.com',
+            Referer: `https://user.qzone.qq.com/${botQQ}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: new URLSearchParams({
+            con: content,
+            hostuin: botQQ,
+            format: 'json',
+            ugc_right: '1',
+            who: '1',
+            syn_tweet_verson: '1',
+            paramstr: '1',
+            feedversion: '1',
+            ver: '1',
+          }),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
+        },
+      );
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error(unknown);
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > 16000) {
+          await reader.cancel();
+          throw new Error(unknown);
+        }
+        chunks.push(value);
+      }
+      const text = Buffer.concat(chunks).toString('utf8').trim();
       result = JSON.parse(
-        text.trim().startsWith('{') ? text : (/\((\{[\s\S]*\})\)/.exec(text)?.[1] ?? ''),
+        text.startsWith('{') ? text : (/^[\w.$]+\(\s*(\{[\s\S]*\})\s*\);?$/.exec(text)?.[1] ?? ''),
       );
     } catch {
-      throw new Error('发布结果未知，请先查看空间；没有自动重试');
+      throw new Error(unknown);
     }
-    if (!response.ok || Number(result.code) !== 0)
-      throw new Error('QQ 空间拒绝发布：' + String(result.message ?? result.code).slice(0, 120));
-    return { published: true, id: String(result.tid ?? result.t1 ?? ''), content };
+    const rawCode = result?.code;
+    const code = typeof rawCode === 'string' && /^-?\d+$/.test(rawCode) ? Number(rawCode) : rawCode;
+    if (typeof code !== 'number' || !Number.isSafeInteger(code)) throw new Error(unknown);
+    if (code !== 0) throw new Error('QQ 空间拒绝发布，错误码 ' + code);
+    if (!response.ok) throw new Error(unknown);
+    const postId = result.tid ?? result.t1;
+    return {
+      published: true,
+      id: typeof postId === 'string' || typeof postId === 'number' ? String(postId) : '',
+      content,
+    };
   }
   get stats() {
     return { runs: this.runs.size, approvals: this.approvals.size };

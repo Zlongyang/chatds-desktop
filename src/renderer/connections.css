@@ -1,0 +1,60 @@
+#page-connections .row {
+  flex-wrap: wrap;
+}
+#page-connections .page-grid {
+  align-items: start;
+}
+#qq-layout.optional-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+#page-connections p {
+  font-size: 13px;
+}
+#page-connections .footnote {
+  font-size: 11px;
+}
+.napcat-environment {
+  margin-bottom: 20px;
+}
+#napcat-directory-label {
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+#napcat-directory {
+  margin: 4px 0 14px;
+  font-weight: 600;
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+#napcat-environment-note {
+  margin-bottom: 0;
+}
+#napcat-environment-note.error {
+  color: #923d2d;
+}
+.qq-details {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 14px;
+}
+.qq-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+}
+#napcat-qr {
+  display: block;
+  background: white;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+#napcat-bind {
+  margin-bottom: 12px;
+}
+#qq-error {
+  color: #923d2d;
+  background: #fff1ec;
+  padding: 10px 14px;
+  border-radius: 8px;
+}

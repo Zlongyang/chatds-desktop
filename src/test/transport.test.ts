@@ -62,6 +62,82 @@ test('OneBot authenticates, verifies account, matches concurrent responses, and 
   assert.equal(sends, 1);
   assert.equal(bot.stats.pending, 0);
 });
+test('a verified group quote of an older bot message invites a reply, and a missing send receipt stays unknown', async (t) => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  const config = {
+    ...defaultConfig().onebot,
+    url: 'ws://127.0.0.1:' + (server.address() as { port: number }).port,
+    botQQ: '11000',
+    ownerQQ: '10001',
+    groups: ['22000'],
+  };
+  const quote = {
+    group_id: 22000,
+    sender: { user_id: 11000 },
+    message: [{ type: 'text', data: { text: '昨天的回复' } }],
+  };
+  let sendCount = 0;
+  server.on('connection', (ws) =>
+    ws.on('message', (bytes) => {
+      const request = JSON.parse(bytes.toString());
+      if (request.action === 'send_group_msg') sendCount++;
+      const data =
+        request.action === 'get_login_info'
+          ? { user_id: 11000 }
+          : request.action === 'get_msg'
+            ? quote
+            : {};
+      ws.send(JSON.stringify({ echo: request.echo, status: 'ok', retcode: 0, data }));
+    }),
+  );
+  const bot = new OneBot(
+    () => config,
+    () => 'fixture',
+  );
+  t.after(async () => {
+    bot.stop();
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  bot.start();
+  await until(() => bot.status === 'online');
+  const raw = {
+    self_id: 11000,
+    user_id: 33000,
+    message_type: 'group',
+    group_id: 22000,
+    message_id: 2,
+    message: [
+      { type: 'reply', data: { id: 1 } },
+      { type: 'text', data: { text: '后来呢？' } },
+    ],
+  };
+  const own = await bot.normalize(raw);
+  assert.equal(own?.trigger, 'direct');
+  assert.deepEqual(own.quoted, { actorId: 'bot', text: '昨天的回复' });
+  quote.sender.user_id = 33000;
+  const other = await bot.normalize(raw);
+  assert.equal(other?.trigger, 'ambient');
+  assert.equal(other.quoted?.actorId, 'qq:33000');
+  const addressedToPeer = await bot.normalize({
+    ...raw,
+    message: [
+      { type: 'at', data: { qq: '33001' } },
+      { type: 'text', data: { text: '下午见？' } },
+    ],
+  });
+  assert.equal(addressedToPeer?.directedElsewhere, true);
+  assert.equal(addressedToPeer?.trigger, 'ambient');
+  quote.sender.user_id = 11000;
+  quote.group_id = 99999;
+  const unrelated = await bot.normalize(raw);
+  assert.equal(unrelated?.trigger, 'ambient');
+  assert.equal(unrelated.quoted, undefined);
+  await assert.rejects(bot.send('onebot:group:22000', '测试'), DeliveryUnknownError);
+  assert.equal(sendCount, 1);
+});
+
 test('wrong OneBot account is stopped before messages are accepted', async (t) => {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');

@@ -25,5 +25,6 @@ The companion prompt and permission architecture were independently implemented 
 - ws, contributors: MIT. https://github.com/websockets/ws
 - Zod, Colin McDonnell and contributors: MIT. https://github.com/colinhacks/zod
 - ipaddr.js, whitequark and contributors: MIT. https://github.com/whitequark/ipaddr.js
+- node-qrcode, Ryan Day and contributors: MIT. https://github.com/soldair/node-qrcode
 
 Dependency license texts remain in the installed packages. Electron's distribution includes its LICENSE and LICENSES.chromium.html. The package lock records transitive dependencies. No NapCat binaries, QQ client, personal character card, account cache or private data are distributed.

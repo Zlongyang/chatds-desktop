@@ -18,9 +18,44 @@
 
 2026-11-17 本机通过 41 项核心测试、去抖交叉语言比对、Electron 开发版与打包版冒烟，生成 NSIS 与 ZIP 并扫描 asar。最终压力报告：10,000 条消息、2,500 次脚本模型调用、约 14.5 秒，Node 运行进程峰值 RSS 约 83 MiB，关闭后运行状态全部释放。此数值不是整个 Electron 应用的内存，也不是八小时真实时间结果。构建哈希与验证清单见 [verification.json](verification.json)。官方 npm registry 审计报告零项已知漏洞；这不是安全性的完整证明。
 
-本机没有可用 Docker 引擎，已运行的容器检查使用真实请求代码对接模拟 Docker API，不能宣称真实容器隔离已在本机验证。CI 单独提供真实 Linux Docker 验证任务。没有向真实 QQ 发送测试消息。安装器尚未做干净 Windows 虚拟机的完整安装／卸载测试，也未做代码签名。
+## 本机工具实测
 
-## 真实模型评测
+2026-11-18 在 Windows 上通过全部 86 项自动化测试。覆盖了更换模型失败时保留原配置、群聊连续补充、跨会话取消隔离、老记录翻页、按机器人账号处理好友申请等场景。另用本机 Docker Desktop 的 Linux 引擎运行真实容器，用公开站点复测网页读取。下表列出模型能调用的全部工具和陪伴动作。
+
+| 工具                                  | 本机验证                                                                                                                                                      |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `memory_remember`、`memory_search`    | 使用真实 SQLite，核对明确要求记住的原话、来源消息、读回结果和会话间的权限。                                                                                   |
+| `skills_load`                         | 从提示词中的技能 ID 加载安装快照，读取正文及资源，缺失资源会给模型返回错误。                                                                                  |
+| `read_file`、`write_file`             | 在临时工作区确认写入后读回原文。拒绝覆写后原文件保留，文件错误仅返回相对路径和错误码。                                                                        |
+| `web_read`                            | 当次访问 OpenAI 新闻页返回 HTTP 403，TechCrunch 的 OpenAI 栏目和 example.com 返回正文。数据库和界面按回复记录每个站点的结果。                                 |
+| `sandbox_exec`                        | 在真实容器运行 Python 和 JavaScript，验证非特权用户、只读根目录、禁网、标准输出、错误输出、退出码和导出文件的 SHA-256。取消已在运行的脚本后，测试容器数归零。 |
+| `qzone_publish`                       | 用本机 OneBot WebSocket 和 HTTP 测试服务验证账号核对、逐次确认、精确正文、错误响应及提交后断线。真实 QQ 账号和空间服务未参与测试。                            |
+| `chat_reply`、`chat_wait`、`chat_end` | 回复只投递一次，等待和结束保持静默，三种动作都会结束本轮模型调用。                                                                                            |
+
+DeepSeek 和通用 OpenAI-compatible 两种配置都通过了本地 HTTP 协议测试。测试服务分两段返回工具参数，真实模型 SDK 解析后调用网页工具，下一次请求携带原调用 ID 和对应错误，再将最终回复写入聊天记录。公网和 Docker 的结果分别保存在 `test-results/tools-live-web.json` 和 `test-results/sandbox-real.json`。
+
+安装器尚未做干净 Windows 虚拟机的完整安装／卸载测试，也未做代码签名。
+
+## 陪伴模式的多轮盲评
+
+`evaluation/replay-cases.json` 包含 6 个合成场景。每轮可以有连续几条消息；运行器等待本轮结束才投递下一轮。合成群消息保留发言人、@ 和引用对象。两组使用相同模型和角色资料，一组运行 ChatDS 的合并、等待、接话逻辑，另一组对每条输入立即作答并保留前文。逐条回复组是用于比较的基线。
+
+先预览场景和调用预算：
+
+```powershell
+npm run eval -- --replay --max-calls=0
+```
+
+把模型服务、接口、模型名和专用密钥设在当前终端的 `CHATDS_EVAL_PROVIDER`、`CHATDS_EVAL_BASE_URL`、`CHATDS_EVAL_MODEL`、`CHATDS_EVAL_API_KEY`，再运行：
+
+```powershell
+npm run eval -- --replay --case=pond --max-calls=12
+npm run eval -- --replay --max-calls=50
+```
+
+默认每次在 `test-results` 下生成新目录。先打开 `blind-review.md`，逐场看谁在说话、是否接住追问、何时保持安静，在表里填 A、B 或平局并记下一句理由。评完再打开 `answer-key.json` 核对版本。`replay.json` 记录请求次数、每轮动作和技术错误。真实 QQ 验收单独进行，回放使用合成发言和本地消息投递。
+
+## 单轮与连发评测
 
 ```powershell
 npm run eval
@@ -56,9 +91,9 @@ node --expose-gc scripts/soak.mjs --duration-ms=28800000
 
 - 仅 Windows x64 桌面打包；其他系统的核心 CI 不代表完整桌面支持。
 - 暂不处理图片内容、语音或自动离线私信；纯图片消息不会触发模型。
-- 只支持 OneBot v11 正向 WebSocket；不托管 NapCat 进程，不代替用户登录。
+- QQ 使用 OneBot v11 正向 WebSocket。选择本机 NapCat 安装目录后，可手动启动支持的 Windows 启动器。登录由用户在手机 QQ 上确认。
 - 模型需要 OpenAI Chat Completions 风格的文本与工具调用；未适配所有厂商特有 reasoning 协议。
-- SQLite 同步操作放在独立运行进程，仍可能在大规模数据库维护时短暂阻塞该进程；历史界面默认展示最近 100 条。
+- SQLite 同步操作放在独立运行进程，大规模维护可能短暂阻塞该进程。聊天页按每页 100 条展示，可翻看更早的消息，也可直接回到最新。
 - 事实提取与摘要有模型语义误判风险；没有自动判断任意记忆“绝对真实”的机制。
 - 每日预算依赖供应商 usage 和本地估计，已在途请求可能有误差；不等于严格金额限额。
 - QQ 空间接口实验性，服务变动可能导致失败；所有未知发布结果均应人工核实。

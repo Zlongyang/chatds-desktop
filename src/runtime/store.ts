@@ -3,7 +3,13 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { id, sensitive } from '../shared/util.js';
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { ChatMessage, MemoryFact, MessageEnvelope, RunContext } from '../shared/types.js';
+import type {
+  ChatMessage,
+  MemoryFact,
+  MessageEnvelope,
+  RunContext,
+  WebReadReceipt,
+} from '../shared/types.js';
 
 const segmenter = new Intl.Segmenter('zh', { granularity: 'word' });
 export function searchTerms(text: string): string[] {
@@ -43,6 +49,7 @@ interface MessageRow {
   reply: string | null;
   status: ChatMessage['status'];
   envelope: string | null;
+  web_reads: string | null;
 }
 export class Store {
   private db: DatabaseSync;
@@ -73,6 +80,12 @@ export class Store {
       { value: string } | undefined;
     if (version && version.value !== '1') throw new Error('不支持的数据库版本，请保留数据库及备份');
     this.db.prepare('INSERT OR IGNORE INTO meta VALUES (?,?)').run('version', '1');
+    if (
+      !(this.db.prepare('PRAGMA table_info(messages)').all() as { name: string }[]).some(
+        (c) => c.name === 'web_reads',
+      )
+    )
+      this.db.exec('ALTER TABLE messages ADD COLUMN web_reads TEXT');
     if (
       !(this.db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]).some(
         (c) => c.name === 'summarized',
@@ -138,7 +151,7 @@ export class Store {
       if (!inserted.changes) return false;
       this.db
         .prepare(
-          'INSERT INTO conversations(id,name,is_group,updated) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=excluded.updated,name=excluded.name',
+          'INSERT INTO conversations(id,name,is_group,updated) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET updated=MAX(conversations.updated+1,excluded.updated),name=excluded.name',
         )
         .run(
           message.conversationId,
@@ -170,7 +183,11 @@ export class Store {
       .reverse()
       .flatMap((r) => (r.envelope ? [JSON.parse(r.envelope) as MessageEnvelope] : []));
   }
-  history(conv: string, before = Number.MAX_SAFE_INTEGER, limit = 100): ChatMessage[] {
+  history(
+    conv: string,
+    before = Number.MAX_SAFE_INTEGER,
+    limit = 100,
+  ): (ChatMessage & { seq: number })[] {
     return (
       this.db
         .prepare('SELECT * FROM messages WHERE conv=? AND seq<? ORDER BY seq DESC LIMIT ?')
@@ -179,6 +196,7 @@ export class Store {
       .reverse()
       .map((r) => ({
         id: r.id,
+        seq: r.seq,
         conversationId: r.conv,
         role: r.role,
         actorId: r.actor,
@@ -187,6 +205,7 @@ export class Store {
         timestamp: r.time,
         replyTo: r.reply ?? undefined,
         status: r.status,
+        ...(r.web_reads ? { webReads: JSON.parse(r.web_reads) as WebReadReceipt[] } : {}),
       }));
   }
   rooms(): { id: string; name: string; isGroup: boolean; updatedAt: number }[] {
@@ -204,14 +223,28 @@ export class Store {
     text: string,
     messageId = id(),
     status: ChatMessage['status'] = 'sent',
+    name = '小鱼',
+    webReads: WebReadReceipt[] = [],
   ): string {
     this.transaction(() => {
       this.db
         .prepare(
-          'INSERT INTO messages(id,conv,role,actor,name,text,time,status) VALUES (?,?,?,?,?,?,?,?)',
+          'INSERT INTO messages(id,conv,role,actor,name,text,time,status,web_reads) VALUES (?,?,?,?,?,?,?,?,?)',
         )
-        .run(messageId, conv, 'assistant', 'bot', '小鱼', text, Date.now(), status ?? 'sent');
-      this.db.prepare('UPDATE conversations SET updated=? WHERE id=?').run(Date.now(), conv);
+        .run(
+          messageId,
+          conv,
+          'assistant',
+          'bot',
+          name,
+          text,
+          Date.now(),
+          status ?? 'sent',
+          webReads.length ? JSON.stringify(webReads) : null,
+        );
+      this.db
+        .prepare('UPDATE conversations SET updated=MAX(updated+1,?) WHERE id=?')
+        .run(Date.now(), conv);
     });
     return messageId;
   }
@@ -519,10 +552,17 @@ export class Store {
     return key;
   }
   finishOutbox(key: string, status: 'sent' | 'unknown' | 'failed', remoteId?: string): void {
-    this.db
-      .prepare('UPDATE outbox SET status=?,remote_id=? WHERE id=?')
-      .run(status, remoteId ?? null, key);
-    this.db.prepare('UPDATE messages SET status=? WHERE id=?').run(status, key);
+    this.transaction(() => {
+      this.db
+        .prepare('UPDATE outbox SET status=?,remote_id=? WHERE id=?')
+        .run(status, remoteId ?? null, key);
+      this.db.prepare('UPDATE messages SET status=? WHERE id=?').run(status, key);
+      this.db
+        .prepare(
+          'UPDATE conversations SET updated=MAX(updated+1,?) WHERE id=(SELECT conv FROM outbox WHERE id=?)',
+        )
+        .run(Date.now(), key);
+    });
   }
   outbox(): { id: string; conv: string; status: string }[] {
     return this.db

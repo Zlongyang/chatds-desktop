@@ -1,22 +1,33 @@
 import { spawn, execFile } from 'node:child_process';
-import { mkdtemp, readFile, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import electron from 'electron';
+import { startQQFixture } from './smoke-qq.mjs';
 const data = await mkdtemp(join(tmpdir(), 'chatds-test-smoke-'));
 await mkdir('test-results', { recursive: true });
 const packaged = process.argv.includes('--packaged');
 const report = resolve('test-results/' + (packaged ? 'smoke-packaged.json' : 'smoke.json'));
 await rm(report, { force: true });
+const qq = await startQQFixture();
+const napcatConfig = join(data, 'napcat-fixture', 'config');
+await mkdir(napcatConfig, { recursive: true });
+await writeFile(
+  join(napcatConfig, 'webui.json'),
+  JSON.stringify({ host: '127.0.0.1', port: qq.port, token: 'fixture' }),
+);
 const env = {
   ...process.env,
   CHATDS_TEST_MODE: '1',
   CHATDS_TEST_DATA: data,
   CHATDS_SMOKE_REPORT: report,
+  CHATDS_SMOKE_QQ_PORT: String(qq.port),
 };
 delete env.ELECTRON_RUN_AS_NODE;
 const child = spawn(
-  packaged ? resolve('release/win-unpacked/ChatDS.exe') : electron,
+  packaged
+    ? resolve(process.env.CHATDS_SMOKE_EXECUTABLE || 'release/win-unpacked/ChatDS.exe')
+    : electron,
   packaged ? [] : ['.'],
   { cwd: process.cwd(), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
 );
@@ -38,9 +49,12 @@ const code = await new Promise((resolve, reject) => {
   child.on('error', reject);
 });
 clearTimeout(timeout);
+qq.close();
 if (code !== 0) throw new Error('Electron smoke failed: ' + output.slice(-6000));
 const result = JSON.parse(await readFile(report, 'utf8'));
 if (
+  !result.qqOnline ||
+  !result.modelStatus ||
   result.hasNode ||
   !result.hasApi ||
   !result.testMode ||
@@ -61,5 +75,7 @@ console.log(
     messages: result.history.length,
     memories: result.memoryCount,
     pages: result.pages.length,
+    qqOnline: result.qqOnline,
+    modelStatus: result.modelStatus,
   }),
 );
