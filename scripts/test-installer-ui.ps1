@@ -179,6 +179,9 @@ try {
     if (Checked $run) { Click-Widget $run; $null = Await-Result { !(Checked $run) } 'cleared automatic launch' }
     Invoke-WizardButton $root 1
     if (!$setup.WaitForExit(15000) -or $setup.ExitCode -ne 0) { throw 'Interactive installer did not finish successfully.' }
+    if (!(Test-Path -LiteralPath (Join-Path $dest 'resources/app.asar') -PathType Leaf)) {
+        throw "The installed app.asar is missing at the requested destination: $dest."
+    }
     $expected = "[NapCat]`r`naction=directory`r`ndirectory=$fixture`r`n"
     if ([IO.File]::ReadAllText($ini) -cne $expected) { throw 'Installed INI has an incorrect action, folder or Unicode encoding.' }
     # Run the installed app.asar with the actual INI, in an isolated profile. The separate
@@ -191,7 +194,7 @@ try {
     $nodeCheck = @'
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
-import {readFile} from 'node:fs/promises';
+import {readFile,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {setTimeout} from 'node:timers/promises';
 import {openDesktop} from './scripts/desktop-journey.mjs';
@@ -200,13 +203,24 @@ const desktop=await openDesktop(profile,entry);
 try {
   const end=Date.now()+30000;
   while(!existsSync(join(folder,'started.txt')) && Date.now()<end) await setTimeout(100);
+  if(!existsSync(join(folder,'started.txt'))) {
+    const state=await desktop.evaluate(async()=>{const s=await window.chatds.state();return {status:s.napcatInstallation?.status, guidance:s.napcatInstallation?.guidance};});
+    throw new Error('Selected local launcher did not write its marker. '+JSON.stringify(state));
+  }
   assert.equal((await readFile(join(folder,'started.txt'),'utf8')).trim(),'fixture');
-  assert.equal(JSON.parse(await readFile(join(profile,'ChatDS','napcat-installation.json'),'utf8')).directory,folder);
-  assert.equal(existsSync(join(profile,'ChatDS','napcat-setup.ini')),false);
+  const saved=JSON.parse(await readFile(join(profile,'ChatDS','napcat-installation.json'),'utf8'));
+  assert.equal(saved.directory,await realpath(folder),'First launch saved a different NapCat installation directory');
+  assert.equal(existsSync(join(profile,'ChatDS','napcat-setup.ini')),false,'First launch left the installer choice unconsumed');
 } finally {await desktop.close();}
 '@
     Push-Location -LiteralPath $project
-    try { $nodeCheck | node --input-type=module - $scratch $archiveMain $fixture; if ($LASTEXITCODE -ne 0) {throw 'Installed first-launch NapCat handoff failed.'} }
+    try {
+        $nodeReport = $nodeCheck | node --input-type=module - $scratch $archiveMain $fixture 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $detail = ($nodeReport | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            throw "Installed first-launch NapCat handoff failed. $detail"
+        }
+    }
     finally { Pop-Location }
     Write-Output 'Interactive NSIS installation, Unicode INI, isolated first launch and harmless selected launcher passed.'
 } catch {
