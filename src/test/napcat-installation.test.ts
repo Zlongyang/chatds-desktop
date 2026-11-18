@@ -3,6 +3,8 @@ import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, realpath, rename, writeFile, access, readdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { syncBuiltinESMExports } from 'node:module';
+import os from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { NapCatInstallation } from '../desktop/napcat-installation.js';
@@ -287,6 +289,14 @@ test(
 );
 
 test('restricted Windows process enumeration uses the recorded live PID and still rechecks the WebUI port', async (t) => {
+  // The production comparison is relative to this boot; a hosted VM can be
+  // younger than the 45-second launch grace period when this test starts.
+  const bootClock = t.mock.method(os, 'uptime', () => 3600);
+  syncBuiltinESMExports();
+  t.after(() => {
+    bootClock.mock.restore();
+    syncBuiltinESMExports();
+  });
   const dir = temporary();
   t.after(() => removeTemporary(dir));
   const root = join(dir, 'selection'),
@@ -312,6 +322,23 @@ test('restricted Windows process enumeration uses the recorded live PID and stil
   };
   const restored = new NapCatInstallation(profile, restricted);
   assert.equal((await restored.ensureStarted()).status, 'starting');
+  await writeFile(
+    join(profile, 'napcat-installation.json'),
+    JSON.stringify({
+      directory: canonical,
+      launcherPid: process.pid,
+      launchedAt: Date.now() - 2 * 3600_000,
+    }),
+  );
+  let freshStarts = 0;
+  const previousBoot = new NapCatInstallation(profile, {
+    ...restricted,
+    startConsole: async () => {
+      freshStarts++;
+    },
+  });
+  assert.equal((await previousBoot.ensureStarted()).status, 'starting');
+  assert.equal(freshStarts, 1, 'a reused PID from before this boot must not suppress a new launch');
   await restored.clear();
   let probes = 0;
   const occupiedDuringPreflight = new NapCatInstallation(profile, {
