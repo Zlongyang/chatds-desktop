@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,7 @@ export async function openDesktop(
   const launcher = join(profile, 'journey-entry.cjs');
   const failure = join(profile, 'journey-start-error.json');
   const selection = join(profile, 'journey-folder.json');
+  const shutdown = 'journey-quit-' + randomUUID();
   await writeFile(
     launcher,
     [
@@ -52,7 +54,9 @@ export async function openDesktop(
             '};',
           ]
         : []),
-      "require('node:readline').createInterface({input: process.stdin}).on('line', line => { if (line === 'quit') app.quit(); });",
+      'const watcher = fs.watch(__dirname, (_, file) => {if (file === ' +
+        JSON.stringify(shutdown) +
+        ') {watcher.close(); app.quit();}});',
       'import(' +
         JSON.stringify(pathToFileURL(resolve(entry)).href) +
         ').catch(error => {fs.writeFileSync(' +
@@ -69,7 +73,7 @@ export async function openDesktop(
     {
       env,
       windowsHide: true,
-      stdio: ['pipe', 'ignore', 'pipe'],
+      stdio: ['ignore', 'ignore', 'pipe'],
     },
   );
   let output = '',
@@ -78,7 +82,6 @@ export async function openDesktop(
   child.stderr.on('data', (chunk) => {
     output = (output + chunk).slice(-16000);
   });
-  child.stdin.on('error', () => {});
   const exited = once(child, 'exit').catch(() => {});
   const pending = new Map();
   function rpc(method, params = {}) {
@@ -104,7 +107,7 @@ export async function openDesktop(
   async function close() {
     socket?.terminate();
     if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
-    child.stdin.end('quit\n');
+    await writeFile(join(profile, shutdown), '');
     const stopped = await Promise.race([
       exited.then(() => true),
       delay(8000, false, { ref: false }),

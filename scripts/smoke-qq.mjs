@@ -58,7 +58,7 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
       if (action === 'get_login_info') {
         accountChecks++;
         ws.send(JSON.stringify({ retcode: 0, status: 'ok', echo, data: { user_id: 10001 } }));
-      } else if (action === 'send_private_msg') {
+      } else if (action === 'send_private_msg' || action === 'send_group_msg') {
         const messageId = 60000 + sends.length;
         sends.push({ action, params, messageId });
         ws.send(
@@ -79,7 +79,7 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
     get accountChecks() {
       return accountChecks;
     },
-    privateMessage({ userId, nickname, text, messageId }) {
+    message({ userId, groupId, mention, nickname, text, messageId }) {
       assert.equal(sockets.clients.size, 1, 'Expected one connected desktop client');
       const [ws] = sockets.clients;
       ws.send(
@@ -87,13 +87,17 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
           time: Math.floor(Date.now() / 1000),
           self_id: 10001,
           post_type: 'message',
-          message_type: 'private',
-          sub_type: 'friend',
+          message_type: groupId ? 'group' : 'private',
+          sub_type: groupId ? 'normal' : 'friend',
+          ...(groupId ? { group_id: groupId } : {}),
           message_id: messageId,
           user_id: userId,
           sender: { user_id: userId, nickname },
-          raw_message: text,
-          message: [{ type: 'text', data: { text } }],
+          raw_message: (mention ? '[CQ:at,qq=' + mention + ']' : '') + text,
+          message: [
+            ...(mention ? [{ type: 'at', data: { qq: String(mention) } }] : []),
+            { type: 'text', data: { text } },
+          ],
         }),
       );
     },

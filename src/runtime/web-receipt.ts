@@ -33,7 +33,7 @@ export function asksForWebEvidence(text: string): boolean {
 // conversational tone. A promise to check later has no scheduled action behind it.
 export function explainsMissingSource(text: string): boolean {
   const limitation =
-    /纯陪伴|网页(?:读取|工具|权限).{0,8}(?:没启用|未开|关闭)|(?:还没|尚未|没法|不能|无法)(?:查证|核实)|(?:给我|发我|提供).{0,12}(?:链接|网址)/u;
+    /纯陪伴|网页(?:读取|工具|权限).{0,8}(?:没启用|未开|关闭)|(?:没开|没启用|没有启用).{0,8}(?:网页|联网)|(?:还没|尚未|没法|不能|无法)(?:联网|上网|查证|核实)|(?:给我|发我|提供).{0,12}(?:链接|网址)/u;
   const promises = /(?:等|回头|稍后|以后|一旦).{0,35}(?:通知|告诉|帮你查|帮你看|发给你|跟你说)/u;
   return limitation.test(text) && !promises.test(text);
 }

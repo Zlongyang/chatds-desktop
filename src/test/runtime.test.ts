@@ -440,6 +440,25 @@ test('an unattempted page failure in chat_reply is corrected in delivery and fut
   assert.match(store.history('desktop:owner').at(-1)!.text, /所有网页/u);
 });
 
+test('a follow-up after a recorded no-read reply offers a way forward without repeating setup', async (t) => {
+  const { host, core, store, send } = fixture(t);
+  const claim = '我这边网页打不开。';
+  host.steps.push(
+    () => assistant(claim),
+    () => assistant(claim),
+  );
+  send('Anthropic 最近公开了什么消息？');
+  await core.idle();
+  send('我问的是最近公开的，能讲一条具体的吗？');
+  await core.idle();
+  const replies = store.history('desktop:owner').filter((message) => message.role === 'assistant');
+  assert.equal(replies.length, 2);
+  assert.match(replies[0]!.text, /纯陪伴/u);
+  assert.match(replies[1]!.text, /正文贴过来/u);
+  assert.ok(replies.every((message) => message.webReads?.length === 0));
+  assert.equal(host.tools.length, 0);
+});
+
 test('a desktop news request retries once with fresh evidence and drops the unsent draft', async (t) => {
   const { host, core, store, send } = fixture(t);
   host.config.tools.web_read = true;

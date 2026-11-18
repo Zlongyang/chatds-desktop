@@ -361,6 +361,7 @@ try {
   assert.deepEqual(modelErrors, []);
   const report = {
     normalDesktop: true,
+    source: entry ? 'archive' : 'dist',
     model: 'local scripted HTTP/SSE',
     fixtureFolderPicker: true,
     privateMemoryVerified: true,

@@ -17,6 +17,11 @@ const nickname = '本机验收用户';
 const userId = 10002;
 const question = '小鱼，今天的车票放在哪里了？';
 const answer = '车票夹在蓝色笔记本里。';
+const groupId = 31001;
+const poolQuestion = '你那个小水池一般拿来干什么呀？';
+const clarification = '我是说，除了游泳的时候。';
+const poolReply = '发呆呀，坐在边上晃脚，偶尔还会看雨点掉进去。';
+const groupBatches = [];
 const post = '今天的雨落在窗沿上。';
 const publishPrompt = '帮我在 QQ 空间发一条说说，正文是：' + post;
 const deniedAnswer = '已取消，这条说说没有发布。';
@@ -38,6 +43,17 @@ const model = createServer(async (req, res) => {
   } else if (user.includes(question) && tools.includes('chat_reply')) {
     requests.push('QQ private chat');
     call = { name: 'chat_reply', arguments: JSON.stringify({ text: answer }) };
+  } else if (user.includes(poolQuestion) && tools.includes('chat_reply')) {
+    requests.push('QQ group chat');
+    const message = payload.messages[userIndex].content;
+    const text = Array.isArray(message) ? message.map((part) => part.text).join('') : message;
+    groupBatches.push(
+      text.split('\n').map((line) => {
+        const { name, text, actor, trigger, mention, channel } = JSON.parse(line);
+        return { name, text, actor, trigger, mention, channel };
+      }),
+    );
+    call = { name: 'chat_reply', arguments: JSON.stringify({ text: poolReply }) };
   } else if (user.includes(publishPrompt) && tools.includes('qzone_publish') && !toolResult) {
     requests.push('publish approval request');
     call = { name: 'qzone_publish', arguments: JSON.stringify({ content: post }) };
@@ -48,7 +64,10 @@ const model = createServer(async (req, res) => {
   ) {
     requests.push('publish denial returned to model');
     content = deniedAnswer;
-  } else return res.writeHead(422).end();
+  } else {
+    requests.push('unexpected model request');
+    return res.writeHead(422).end();
+  }
   const delta = call
     ? {
         role: 'assistant',
@@ -203,6 +222,98 @@ async function denyPublish(output) {
   return approval;
 }
 
+async function checkGroup(output) {
+  await click('[data-page="connections"]');
+  await waitVisible('#qq-groups');
+  await fill('#qq-groups', String(groupId));
+  await click('#qq-access button');
+  await waitVisible('#notice', '聊天名单已保存');
+  const start = requests.length;
+  const count = qq.sends.length;
+  const muzi = { groupId, userId: 20003, nickname: '木子' };
+  const azhu = { groupId, userId: 20002, nickname: '阿竹' };
+  qq.message({ ...muzi, messageId: 51001, mention: 10001, text: poolQuestion });
+  qq.message({ ...muzi, messageId: 51002, text: clarification });
+  await waitFor('send_group_msg', () => qq.sends.length > count);
+  const sent = qq.sends[count];
+  assert.equal(sent.action, 'send_group_msg');
+  assert.deepEqual(sent.params, {
+    group_id: groupId,
+    message: [{ type: 'text', data: { text: poolReply } }],
+  });
+  const author = { name: '木子', actor: 'qq:20003', channel: 'QQ群' };
+  assert.deepEqual(groupBatches, [
+    [
+      { ...author, text: poolQuestion, trigger: 'direct', mention: true },
+      { ...author, text: clarification, trigger: 'continuation', mention: false },
+    ],
+  ]);
+  await click('[data-page="chat"]');
+  const title = '群聊 ' + groupId;
+  await waitFor('whitelisted group conversation', () =>
+    app.evaluate((name) => {
+      const room = [...document.querySelectorAll('#rooms button')].find(
+        (b) => b.querySelector('strong')?.textContent === name,
+      );
+      if (!room?.getClientRects().length) return false;
+      room.click();
+      return true;
+    }, title),
+  );
+  await waitVisible('#chat-name', title);
+  await waitVisible('#messages .assistant .bubble', poolReply);
+  await waitVisible('#chat-phase', '空闲');
+  await click('#ambient');
+  // Reopen the room so the checkbox reflects saved settings before testing other-directed mentions.
+  await click('#local-room');
+  await app.evaluate((name) => {
+    [...document.querySelectorAll('#rooms button')]
+      .find((b) => b.querySelector('strong')?.textContent === name)
+      .click();
+  }, title);
+  await waitFor('group ambient replies enabled', () =>
+    app.evaluate(() => document.querySelector('#ambient').checked),
+  );
+  const busQuestion = '阿竹，明天那班车改几点了？';
+  const busAnswer = '七点半，还是老地方见。';
+  qq.message({ ...muzi, messageId: 51003, mention: azhu.userId, text: busQuestion });
+  qq.message({ ...azhu, messageId: 51004, mention: muzi.userId, text: busAnswer });
+  await waitFor('both group members visible', () =>
+    app.evaluate(
+      (text) =>
+        [...document.querySelectorAll('#messages .user .bubble')].some(
+          (bubble) => bubble.textContent === text,
+        ),
+      busAnswer,
+    ),
+  );
+  // Observe longer than the normal group's eight-second maximum collection window.
+  await delay(8500);
+  const transcript = await app.evaluate(() =>
+    [...document.querySelectorAll('#messages .message')].map((r) => ({
+      name: r.querySelector('.message-name').textContent,
+      text: r.querySelector('.bubble').textContent,
+    })),
+  );
+  assert.deepEqual(transcript, [
+    { name: '木子', text: poolQuestion },
+    { name: '木子', text: clarification },
+    { name: '小鱼', text: poolReply },
+    { name: '木子', text: busQuestion },
+    { name: '阿竹', text: busAnswer },
+  ]);
+  assert.deepEqual(requests.slice(start), ['QQ group chat']);
+  assert.equal(qq.sends.length - count, 1);
+  await app.screenshot(join(output, '07-pool-group.png'));
+  return {
+    groupId,
+    transcript,
+    modelBatches: groupBatches,
+    ambientEnabled: true,
+    quietObservationMs: 8500,
+  };
+}
+
 const profile = await mkdtemp(join(tmpdir(), 'chatds-test-qq-chat-'));
 await mkdir('test-results', { recursive: true });
 const output = await mkdtemp(join(resolve('test-results'), 'qq-journey-'));
@@ -228,6 +339,8 @@ try {
   await fill('#model-id', 'qq-fixture');
   await click('#model-test');
   await waitVisible('#model-status', '验证通过');
+  if (await app.evaluate(() => document.querySelector('#auto-memory').checked))
+    await click('#auto-memory');
   await click('#setup-qq');
   await click('#napcat-alternative summary');
   await fill('#napcat-link', 'http://127.0.0.1:' + qq.port + '/webui?token=fixture');
@@ -250,7 +363,7 @@ try {
   await waitVisible('#qq-status', 'QQ 在线');
   await waitVisible('#qq-account', '主号 ' + userId);
   await app.screenshot(join(output, '02-bound.png'));
-  qq.privateMessage({ userId, nickname, text: question, messageId: 50001 });
+  qq.message({ userId, nickname, text: question, messageId: 50001 });
   await waitFor('outbound OneBot action', () => qq.sends.length);
   assert.equal(qq.sends[0].params.user_id, userId);
   assert.deepEqual(qq.sends[0].params.message, [{ type: 'text', data: { text: answer } }]);
@@ -275,6 +388,7 @@ try {
   assert.equal(cookieRequests, 0);
   assert.equal(await readFile(fetchLog, 'utf8'), '', 'Unexpected outbound Qzone fetch');
   assert.equal(qq.sends.length, 1);
+  const group = await checkGroup(output);
   const report = {
     passed: true,
     source: archive || resolve('dist/desktop/main.js'),
@@ -289,6 +403,7 @@ try {
     acknowledged: qq.sends,
     historyBeforeRestart: live,
     historyAfterRestart: restored,
+    group,
     qzone: {
       approval,
       decision: 'denied',

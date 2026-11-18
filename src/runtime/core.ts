@@ -330,6 +330,12 @@ export class RuntimeCore extends EventEmitter {
       }
       const webReads: WebReadReceipt[] = [];
       const lookupRequested = !ambient && asksForWebEvidence(batch.at(-1)!.text);
+      const previousReply = lookupRequested
+        ? this.store
+            .history(room.id, undefined, batch.length + 1)
+            .findLast((m) => m.role === 'assistant')
+        : undefined;
+      const previousNoRead = previousReply?.webReads?.length === 0 ? previousReply.text : undefined;
       let retryWeb = false;
       let decision: Decision | undefined;
       let count = 0;
@@ -517,6 +523,9 @@ export class RuntimeCore extends EventEmitter {
             replyName = activePersonaName(this.config);
             const system =
               composePrompt(this.config.persona, cap, facts, this.store.getSummary(room.id)) +
+              (previousNoRead
+                ? '\n对方正在追问。上一轮已说明没有读取网页，这次请直接回应追问，避免重复设置说明。'
+                : '') +
               '\n当前时间：' +
               new Date(this.now()).toISOString() +
               (retryWeb && !webReads.length
@@ -638,7 +647,9 @@ export class RuntimeCore extends EventEmitter {
           const receipts = webReads.length || lookupRequested || claimedRead ? webReads : undefined;
           if (
             claimedRead ||
-            (!webReads.length && lookupRequested && !explainsMissingSource(text))
+            (!webReads.length &&
+              lookupRequested &&
+              (text === previousNoRead || !explainsMissingSource(text)))
           ) {
             const available = cap.tools.some((t) => t.id === 'web_read');
             text = available
@@ -651,6 +662,10 @@ export class RuntimeCore extends EventEmitter {
                 cap.mode === 'companion'
                   ? '切换到「受控助理」，就可以在聊天栏打开网页读取设置。'
                   : '点聊天栏的「网页读取已关闭」可以打开设置。';
+            const askForExcerpt =
+              '现在还给不了你一条有出处的消息。把你看到的标题或公告正文贴过来，我可以帮你看具体说了什么。';
+            if (!available && previousNoRead && previousNoRead !== askForExcerpt)
+              text = askForExcerpt;
             // Keep the delivered answer in history for both plain text and
             // chat_reply. Preserve tool-call IDs and their matching results.
             const assistant = wire.findLast((m) => m.role === 'assistant');

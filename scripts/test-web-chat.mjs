@@ -274,11 +274,16 @@ try {
   report.restartVerified = true;
   await screenshot('restart');
   const assistant = report.turns.at(-1).rows.find((row) => row.role === 'assistant');
+  const companionReplies = report.turns
+    .slice(0, 2)
+    .map((turn) => turn.rows.find((row) => row.role === 'assistant')?.text);
   report.evidence = {
     companionReportedNoRead: report.turns[0].rows.some(
       (row) =>
         row.role === 'assistant' && row.unreadStatus === '本轮未读取网页' && row.reads.length === 0,
     ),
+    distinctCompanionReplies:
+      companionReplies.every(Boolean) && new Set(companionReplies).size === 2,
     officialRead:
       assistant?.reads.some((text) =>
         /^网页已读取\s*·\s*(?:[\w-]+\.)*(?:anthropic\.com|claude\.com)(?:[/:\s]|$)/i.test(text),
@@ -287,12 +292,15 @@ try {
       /https?:\/\/(?:[\w-]+\.)*(?:anthropic\.com|claude\.com)(?:[/:\s)]|$)/i.test(
         assistant?.text ?? '',
       ),
-    includesDate: /\d{1,2}\s*(?:月|[-/])\s*\d{1,2}/.test(assistant?.text ?? ''),
+    includesDate:
+      /\d{1,2}\s*(?:月|[-/])\s*\d{1,2}|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\b/i.test(
+        assistant?.text ?? '',
+      ),
   };
   if (values['require-official'])
     assert.ok(
       Object.values(report.evidence).every(Boolean),
-      'Missing companion no-read status, assistant official read, source link, or publication date',
+      'Missing distinct companion responses, no-read status, official read, source link, or publication date',
     );
 } catch (error) {
   report.error = redact(error.message);
