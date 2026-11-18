@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -10,13 +19,18 @@ import { parseArgs } from 'node:util';
 import { openDesktop } from './desktop-journey.mjs';
 import { startQQFixture } from './smoke-qq.mjs';
 
-const { values } = parseArgs({ options: { archive: { type: 'string' } } });
+const { values } = parseArgs({
+  options: { archive: { type: 'string' }, 'napcat-zip': { type: 'string' } },
+});
 const archive = values.archive && resolve(values.archive);
 const entry = archive && join(archive, 'dist/desktop/main.js');
 const nickname = '本机验收用户';
 const userId = 10002;
 const question = '小鱼，今天的车票放在哪里了？';
 const answer = '车票夹在蓝色笔记本里。';
+const friendId = 10003;
+const friendName = '普通好友';
+const friendAnswer = '我在，想聊些什么？';
 const groupId = 31001;
 const poolQuestion = '你那个小水池一般拿来干什么呀？';
 const clarification = '我是说，除了游泳的时候。';
@@ -40,6 +54,13 @@ const model = createServer(async (req, res) => {
   if (user.includes('请回答连接成功') && !tools.length) {
     requests.push('model verification');
     content = '连接成功';
+  } else if (
+    user.includes('/状态') &&
+    user.includes('qq:' + friendId) &&
+    tools.includes('chat_reply')
+  ) {
+    requests.push('ordinary friend without owner');
+    call = { name: 'chat_reply', arguments: JSON.stringify({ text: friendAnswer }) };
   } else if (user.includes(question) && tools.includes('chat_reply')) {
     requests.push('QQ private chat');
     call = { name: 'chat_reply', arguments: JSON.stringify({ text: answer }) };
@@ -94,8 +115,8 @@ const model = createServer(async (req, res) => {
 });
 
 let app, qq;
-async function waitFor(label, test) {
-  const deadline = Date.now() + 20000;
+async function waitFor(label, test, timeout = 20000) {
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const value = await test();
     if (value) return value;
@@ -146,12 +167,20 @@ function fill(selector, value) {
     value,
   );
 }
-async function checkConversation() {
+async function checkConversation(name = nickname, q = question, a = answer) {
   await waitVisible('[data-page="chat"]');
   await click('[data-page="chat"]');
-  await waitVisible('#rooms button', nickname);
-  await click('#rooms button');
-  await waitVisible('#chat-name', nickname);
+  await waitFor('private room ' + name, () =>
+    app.evaluate((name) => {
+      const button = [...document.querySelectorAll('#rooms button')].find(
+        (el) => el.querySelector('strong')?.textContent === name,
+      );
+      if (!button?.getClientRects().length) return false;
+      button.click();
+      return true;
+    }, name),
+  );
+  await waitVisible('#chat-name', name);
   const history = await waitFor('QQ conversation with both messages and final delivery', () =>
     app.evaluate(
       (q, a) => {
@@ -174,8 +203,8 @@ async function checkConversation() {
           throw new Error('Failed or unknown delivery');
         return { user, assistant, phase };
       },
-      question,
-      answer,
+      q,
+      a,
     ),
   );
   return history;
@@ -317,6 +346,83 @@ async function checkGroup(output) {
 const profile = await mkdtemp(join(tmpdir(), 'chatds-test-qq-chat-'));
 await mkdir('test-results', { recursive: true });
 const output = await mkdtemp(join(resolve('test-results'), 'qq-journey-'));
+async function checkZipImport(source) {
+  const zipProfile = await mkdtemp(join(tmpdir(), 'chatds-test-qq-chat-zip-'));
+  let managedPeer;
+  try {
+    const input = join(zipProfile, 'NapCat.Shell.zip');
+    await copyFile(source, input);
+    const sha256 = createHash('sha256')
+      .update(await readFile(input))
+      .digest('hex');
+    assert.equal(sha256, '02e5ff0f79916c1e04c81c1b4590056406fb4293f1f1300c955e71fd08b2829d');
+    app = await openDesktop(zipProfile, entry, { captureNapcatLaunch: true });
+    await waitVisible('#napcat-import-zip');
+    await app.chooseNextFile(input, '选择 NapCat.Shell.zip');
+    await click('#napcat-import-zip');
+    const record = await waitFor(
+      'managed NapCat startup request',
+      async () => {
+        const file = await readFile(join(zipProfile, 'journey-napcat-launch.jsonl'), 'utf8').catch(
+          (error) => {
+            if (error.code !== 'ENOENT') throw error;
+            return '';
+          },
+        );
+        if (file.trim()) return JSON.parse(file.trim().split('\n')[0]);
+        const missing = await app.evaluate(() =>
+          /未找到已安装的 Windows QQ|安装或修复 QQ NT/.test(document.body.innerText),
+        );
+        return missing && { missingQQ: true };
+      },
+      90000,
+    );
+    const expected = join(zipProfile, 'ChatDS', 'napcat-packages', '4.18.42');
+    assert.ok((await stat(join(expected, 'napcat.mjs'))).size > 0);
+    const webui = JSON.parse(await readFile(join(expected, 'config', 'webui.json'), 'utf8'));
+    assert.equal(webui.host, '127.0.0.1');
+    assert.ok(Number.isInteger(webui.port) && webui.port > 0 && webui.port !== 6099);
+    assert.ok(typeof webui.token === 'string' && webui.token.length >= 32);
+    if (!record.missingQQ) {
+      assert.equal(await realpath(record.cwd), await realpath(expected));
+      assert.ok((await stat(join(expected, record.script))).isFile());
+      managedPeer = await startQQFixture({
+        port: webui.port,
+        token: webui.token,
+        autoConfirm: false,
+      });
+      await waitFor(
+        'QR from imported Shell profile',
+        () =>
+          app.evaluate(() => {
+            const img = document.querySelector('#napcat-qr');
+            return img?.getClientRects().length && img.naturalWidth > 0;
+          }),
+        60000,
+      );
+    }
+    await waitVisible('#napcat-directory', expected);
+    await app.screenshot(join(output, '08-imported-shell.png'));
+    return {
+      version: '4.18.42',
+      sha256,
+      managedDirectory: 'napcat-packages/4.18.42',
+      interceptedLauncher: record.script,
+      qqClientMissing: !!record.missingQQ,
+      simulatedManagedQR: !!managedPeer,
+    };
+  } finally {
+    await app?.close();
+    managedPeer?.close();
+    app = undefined;
+    const target = await realpath(zipProfile);
+    assert.ok(
+      dirname(target) === (await realpath(tmpdir())) &&
+        basename(target).startsWith('chatds-test-qq-chat-zip-'),
+    );
+    await rm(target, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}
 try {
   const archiveSha256 =
     archive &&
@@ -329,22 +435,28 @@ try {
   const fetchLog = join(profile, 'qzone-fetch-attempts.log');
   await writeFile(fetchLog, '', { flag: 'wx' });
   app = await openDesktop(profile, entry, { blockQzone: true });
-  await waitVisible('#model-status', '待配置');
+  await waitVisible('#page-connections');
+  await waitVisible('#qq-desktop-only');
+  await waitVisible('#napcat-installation');
+  await waitVisible('#napcat-import-zip');
+  await waitVisible('#napcat-download');
   assert.equal(
     await app.evaluate(() => !!document.querySelector('#test-badge').getClientRects().length),
     false,
   );
-  await fill('#provider', 'local');
-  await fill('#base-url', 'http://127.0.0.1:' + model.address().port + '/v1');
-  await fill('#model-id', 'qq-fixture');
-  await click('#model-test');
-  await waitVisible('#model-status', '验证通过');
-  if (await app.evaluate(() => document.querySelector('#auto-memory').checked))
-    await click('#auto-memory');
-  await click('#setup-qq');
-  await click('#napcat-alternative summary');
-  await fill('#napcat-link', 'http://127.0.0.1:' + qq.port + '/webui?token=fixture');
-  await click('#napcat-link-form button');
+  await app.screenshot(join(output, '00-setup.png'));
+  const runningFolder = join(profile, 'NapCat fixture');
+  await mkdir(join(runningFolder, 'config'), { recursive: true });
+  await writeFile(
+    join(runningFolder, 'config', 'webui.json'),
+    JSON.stringify({
+      host: '127.0.0.1',
+      port: qq.port,
+      token: 'fixture',
+    }),
+  );
+  await app.chooseNextFolder(runningFolder, '选择本机 NapCat 安装目录');
+  await click('#napcat-installation');
   const qrWidth = await waitFor('decoded QR image', () =>
     app.evaluate(() => {
       const qr = document.querySelector('#napcat-qr');
@@ -357,16 +469,49 @@ try {
   qq.advanceLogin();
   await waitVisible('#napcat-state', '在手机 QQ 上确认');
   qq.advanceLogin();
-  await waitVisible('#napcat-state', '已登录机器人 QQ 10001');
-  await fill('#napcat-owner', String(userId));
-  await click('#napcat-finish');
+  await waitVisible('[data-page="connections"]');
+  await click('[data-page="connections"]');
   await waitVisible('#qq-status', 'QQ 在线');
+  await waitVisible('#qq-owner-manage');
+  assert.equal(await app.evaluate(() => document.querySelector('#qq-owner-manage').value), '');
+  await app.screenshot(join(output, '02-bound-without-owner.png'));
+  const firstAccountChecks = qq.accountChecks;
+  await app.close();
+  app = await openDesktop(profile, entry, { blockQzone: true });
+  await waitVisible('[data-page="connections"]');
+  await click('[data-page="connections"]');
+  await waitVisible('#qq-status', 'QQ 在线');
+  assert.ok(qq.accountChecks > firstAccountChecks);
+  assert.equal(await app.evaluate(() => document.querySelector('#qq-owner-manage').value), '');
+  await click('[data-page="settings"]');
+  await waitVisible('#model-status', '待配置');
+  await fill('#provider', 'local');
+  await fill('#base-url', 'http://127.0.0.1:' + model.address().port + '/v1');
+  await fill('#model-id', 'qq-fixture');
+  await click('#model-test');
+  await waitVisible('#model-status', '验证通过');
+  if (await app.evaluate(() => document.querySelector('#auto-memory').checked))
+    await click('#auto-memory');
+  qq.message({ userId, nickname, subType: 'other', text: '/状态', messageId: 49998 });
+  qq.message({ userId, nickname, subType: 'other', text: '空主号陌生私聊', messageId: 49999 });
+  qq.message({ userId: friendId, nickname: friendName, text: '/状态', messageId: 50000 });
+  await click('[data-page="chat"]');
+  await waitVisible('#room-connect');
+  await checkConversation(friendName, '/状态', friendAnswer);
+  assert.deepEqual(requests, ['model verification', 'ordinary friend without owner']);
+  assert.equal(qq.sends.length, 1);
+  assert.equal(qq.sends[0].params.user_id, friendId);
+  assert.equal(await app.evaluate(() => document.querySelectorAll('#rooms button').length), 1);
+  await click('#room-connect');
+  await waitVisible('#qq-owner-manage');
+  await fill('#qq-owner-manage', String(userId));
+  await click('#qq-owner-form button[type="submit"]');
   await waitVisible('#qq-account', '主号 ' + userId);
   await app.screenshot(join(output, '02-bound.png'));
   qq.message({ userId, nickname, text: question, messageId: 50001 });
-  await waitFor('outbound OneBot action', () => qq.sends.length);
-  assert.equal(qq.sends[0].params.user_id, userId);
-  assert.deepEqual(qq.sends[0].params.message, [{ type: 'text', data: { text: answer } }]);
+  await waitFor('outbound owner chat action', () => qq.sends.length === 2);
+  assert.equal(qq.sends[1].params.user_id, userId);
+  assert.deepEqual(qq.sends[1].params.message, [{ type: 'text', data: { text: answer } }]);
   const live = await checkConversation();
   await app.screenshot(join(output, '03-chat.png'));
   const checksBeforeRestart = qq.accountChecks;
@@ -376,19 +521,29 @@ try {
   const restored = await checkConversation();
   assert.deepEqual(restored, live);
   assert.ok(qq.accountChecks > checksBeforeRestart, 'Restart did not verify the QQ account again');
-  assert.equal(qq.sends.length, 1, 'Unexpected duplicate delivery');
-  assert.deepEqual(requests, ['model verification', 'QQ private chat']);
+  assert.equal(qq.sends.length, 2, 'Unexpected duplicate delivery');
+  assert.deepEqual(requests, [
+    'model verification',
+    'ordinary friend without owner',
+    'QQ private chat',
+  ]);
   await app.screenshot(join(output, '04-restarted.png'));
   const approval = await denyPublish(output);
-  assert.deepEqual(requests.slice(2), [
+  assert.deepEqual(requests.slice(3), [
     'publish approval request',
     'publish denial returned to model',
   ]);
   const cookieRequests = qq.actions.filter((action) => action === 'get_cookies').length;
   assert.equal(cookieRequests, 0);
   assert.equal(await readFile(fetchLog, 'utf8'), '', 'Unexpected outbound Qzone fetch');
-  assert.equal(qq.sends.length, 1);
+  assert.equal(qq.sends.length, 2);
   const group = await checkGroup(output);
+  let zipImport;
+  if (values['napcat-zip']) {
+    await app.close();
+    app = undefined;
+    zipImport = await checkZipImport(resolve(values['napcat-zip']));
+  }
   const report = {
     passed: true,
     source: archive || resolve('dist/desktop/main.js'),
@@ -396,7 +551,17 @@ try {
     freshProfile: true,
     normalMode: true,
     simulatedServices: ['NapCat WebUI and phone login', 'OneBot v11', 'local model'],
-    login: { qrWidth, phoneConfirmationPromptSeen: true, bot: 10001, owner: userId },
+    login: {
+      qrWidth,
+      phoneConfirmationPromptSeen: true,
+      bot: 10001,
+      owner: userId,
+      autoBoundWithoutOwner: true,
+      ownerlessRestart: true,
+      unboundStrangerIgnored: true,
+      friendWithOwnIdentity: friendId,
+    },
+    zipImport,
     requests,
     toolCall: 'chat_reply',
     accountChecks: qq.accountChecks,

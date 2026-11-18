@@ -5,6 +5,7 @@ const node = (id: string) => document.getElementById(id)!;
 const button = (id: string) => node(id) as HTMLButtonElement;
 type Installation = AppSnapshot['napcatInstallation'];
 let installation: Installation = null;
+let progress: AppSnapshot['napcatSetup'] | undefined;
 let busy = false;
 let pairing = false;
 let check: { online: boolean; detail: string } | undefined;
@@ -13,6 +14,13 @@ let failed = false;
 
 function paint() {
   const configured = !!installation;
+  const installing = !!progress?.busy;
+  for (const id of ['napcat-download', 'napcat-import-zip']) {
+    button(id).classList.toggle('hidden', configured || installing);
+    button(id).disabled = busy || installing;
+  }
+  button('napcat-cancel-install').classList.toggle('hidden', !installing);
+  button('napcat-qq-download').classList.toggle('hidden', installation?.status !== 'missing-qq');
   node('napcat-directory').textContent = installation?.directory || '尚未选择';
   const badge = node('napcat-environment-state');
   badge.textContent = !configured
@@ -25,9 +33,8 @@ function paint() {
           : 'WebUI 未就绪'
         : '已保存目录';
   badge.classList.toggle('online', !!installation?.available && !!check?.online);
-  button('napcat-installation').textContent = configured ? '更换目录' : '选择安装目录';
-  button('napcat-installation').classList.toggle('primary', !configured);
-  button('napcat-installation').disabled = busy || pairing;
+  button('napcat-installation').textContent = configured ? '更换目录' : '选择已有目录';
+  button('napcat-installation').disabled = busy || pairing || installing;
   button('napcat-launch').classList.toggle('hidden', !installation?.canLaunch || !!check?.online);
   button('napcat-launch').disabled = busy || pairing;
   button('napcat-check').classList.toggle('hidden', !configured);
@@ -36,15 +43,22 @@ function paint() {
   button('napcat-forget').disabled = busy || pairing;
   button('napcat-guide').disabled = busy;
   node('napcat-environment-note').textContent =
+    (installing
+      ? progress!.total
+        ? '正在准备原版 NapCat：' + Math.floor((progress!.received / progress!.total) * 100) + '%'
+        : '正在准备 NapCat…'
+      : '') ||
     note ||
+    progress?.error ||
     check?.detail ||
     (!installation
-      ? '选择你安装 NapCat 的文件夹。还没安装时，可以先打开安装指南。'
+      ? '请选择已有 NapCat，或使用下载及离线安装。完成后会自动打开 QQ 登录。'
       : !installation.available
         ? '已保存的目录不可用。请更换目录或取消关联。'
-        : installation.canLaunch
-          ? '可从这里启动 NapCat，然后在下方登录 QQ。'
-          : '请使用原安装方式启动 NapCat，然后检查 WebUI。');
+        : installation.guidance ||
+          (installation.canLaunch
+            ? '可从这里启动 NapCat，然后在下方登录 QQ。'
+            : '请使用原安装方式启动 NapCat，然后检查 WebUI。'));
   node('napcat-environment-note').classList.toggle('error', failed);
 }
 function setInstallation(next: Installation) {
@@ -83,7 +97,8 @@ async function inspect() {
     note = result.detail;
   }
 }
-export function renderNapcatSettings(next: Installation) {
+export function renderNapcatSettings(next: Installation, setup: AppSnapshot['napcatSetup']) {
+  progress = setup;
   setInstallation(next);
   paint();
 }
@@ -111,3 +126,20 @@ button('napcat-forget').onclick = () =>
     setInstallation(null);
   });
 button('napcat-guide').onclick = () => void run('', () => api.napcatGuide());
+button('napcat-qq-download').onclick = () => void run('', () => api.openQQDownload());
+button('napcat-cancel-install').onclick = () =>
+  void api.napcatCancelInstall().catch((e) => {
+    note = String(e);
+    paint();
+  });
+for (const [id, source] of [
+  ['napcat-download', 'download'],
+  ['napcat-import-zip', 'archive'],
+] as const) {
+  button(id).onclick = () =>
+    void run('正在准备 NapCat…', async () => {
+      const result = await api.napcatInstallPackage(source);
+      note = '';
+      if (result) setInstallation(result);
+    });
+}

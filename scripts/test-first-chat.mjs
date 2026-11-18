@@ -24,7 +24,8 @@ if (target === '--archive') {
   // Keep the real renderer, model client and utility process; move all application data to a fresh directory.
   await writeFile(
     entry,
-    "const { app } = require('electron');\napp.setPath('appData', __dirname);\napp.setPath('userData', __dirname);\nimport(" +
+    "const { app } = require('electron');\napp.setPath('appData', __dirname);\napp.setPath('userData', __dirname);\n" +
+      "app.on('browser-window-created', (_, win) => { win.setFocusable(false); win.setSkipTaskbar(true); win.setPosition(-32000,-32000,false); });\nimport(" +
       JSON.stringify(pathToFileURL(join(archive, 'dist/desktop/main.js')).href) +
       ').catch(error => { console.error(error); app.exit(1); });\n',
   );
@@ -114,18 +115,19 @@ try {
       }
     }
     await wait(
+      () => visible('page-connections') && visible('qq-desktop-only'),
+      'First-launch QQ setup missing',
+    );
+    get('qq-desktop-only').click();
+    await wait(
       () =>
         visible('model-form') &&
         !get('model-fields').disabled &&
         get('model-status').textContent === '待配置',
       'First-launch model setup missing',
     );
-    if (
-      visible('test-badge') ||
-      visible('room-connect') ||
-      document.querySelector('[data-page="connections"]').getClientRects().length
-    )
-      throw new Error('Unexpected test or QQ controls on first launch');
+    if (visible('test-badge') || visible('qq-management'))
+      throw new Error('Unexpected test mode or bound QQ account');
     const change = (id, value, event) => {
       get(id).value = value;
       get(id).dispatchEvent(new Event(event, { bubbles: true }));

@@ -8,10 +8,10 @@
 
 Windows x64 用户可在发布页选择测试版，下载安装程序 `.exe`，或解压 `.zip` 后运行 `ChatDS.exe`。同页提供 SHA-256 校验和。安装版与 ZIP 版使用同一份 `%APPDATA%\ChatDS` 数据。测试版未做 Windows 代码签名。[GitHub Releases](https://github.com/Zlongyang/chatds-desktop/releases)
 
-1. 打开「环境配置」。选择 DeepSeek 时，填入 API Key，点「测试通过后保存」。本机模型和其他 OpenAI 兼容服务可填写各自的接口地址与模型名称。
-2. 直接在「聊天」里聊天。无需先配置 QQ 或 Docker。
-3. 要在 QQ 聊天，打开「环境配置 → 配置 NapCat（可选）→ 选择安装目录」，关联你自己安装的 NapCat。启动 NapCat，检查 WebUI，再点「扫码登录 QQ」。已有登录会直接识别机器人账号。其他 OneBot 服务可在同页手动接入。[连接说明](docs/configuration.md)
-4. 其他私聊对象与群必须加入白名单。群内「无需 @，允许适时插话」默认关闭，按群开启。
+1. 在 Windows 安装向导中选择由 ChatDS 下载 NapCat，或选择已有的安装目录。使用 ZIP 版时，首次打开也可以导入离线原包或选择「仅使用桌面聊天」。
+2. 启动 ChatDS。使用 QQ 时需要本机 Windows QQ 客户端。ChatDS 准备好 NapCat 后显示登录二维码，用打算给小鱼使用的 QQ 扫码确认。以后打开 ChatDS 会检查并启动已关联的 NapCat，登录仍有效时会直接连接。[连接说明](docs/configuration.md)
+3. 打开「环境配置」，选择 DeepSeek 并填入 API Key，点「测试通过后保存」。本机模型和其他 OpenAI 兼容服务可填写各自的接口地址与模型名称。
+4. 首次扫码接入后，小鱼可以回复该 QQ 的好友私聊。可在「QQ 管理」关闭好友聊天、设置共享桌面记忆的主号或添加允许的群。群内自动插话按群开启。
 
 密钥由 Electron `safeStorage` 使用 Windows 加密能力保护，界面不会回读明文。更换模型接口地址需要为新地址保存密钥。人设、技能、聊天内容无法修改实际权限。
 

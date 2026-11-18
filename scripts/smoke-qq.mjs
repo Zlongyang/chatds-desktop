@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 
 // Exercise the actual renderer, IPC bridge, HTTP client and OneBot socket with a local account fixture.
-export async function startQQFixture({ autoConfirm = true } = {}) {
+export async function startQQFixture({ autoConfirm = true, port = 0, token = 'fixture' } = {}) {
   let loginStep = 0;
   const sends = [];
   const actions = [];
@@ -15,7 +15,9 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
     if (req.url === '/api/auth/login') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      const hash = createHash('sha256').update('fixture.napcat').digest('hex');
+      const hash = createHash('sha256')
+        .update(token + '.napcat')
+        .digest('hex');
       if (JSON.parse(body).hash !== hash) return res.writeHead(401).end();
       return reply({ Credential: 'smoke-session' });
     }
@@ -67,7 +69,7 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
       } else ws.close();
     });
   });
-  server.listen(0, '127.0.0.1');
+  server.listen(port, '127.0.0.1');
   await once(server, 'listening');
   return {
     port: server.address().port,
@@ -79,7 +81,7 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
     get accountChecks() {
       return accountChecks;
     },
-    message({ userId, groupId, mention, nickname, text, messageId }) {
+    message({ userId, groupId, mention, nickname, text, messageId, subType }) {
       assert.equal(sockets.clients.size, 1, 'Expected one connected desktop client');
       const [ws] = sockets.clients;
       ws.send(
@@ -88,7 +90,7 @@ export async function startQQFixture({ autoConfirm = true } = {}) {
           self_id: 10001,
           post_type: 'message',
           message_type: groupId ? 'group' : 'private',
-          sub_type: groupId ? 'normal' : 'friend',
+          sub_type: subType ?? (groupId ? 'normal' : 'friend'),
           ...(groupId ? { group_id: groupId } : {}),
           message_id: messageId,
           user_id: userId,

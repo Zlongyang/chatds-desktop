@@ -63,6 +63,7 @@ export interface AppConfig {
     url: string;
     botQQ: string;
     ownerQQ: string;
+    friendChats?: boolean;
     users: string[];
     groups: string[];
   };
@@ -184,7 +185,14 @@ export interface AppSnapshot {
   config: AppConfig;
   keyConfigured: boolean;
   modelVerified: boolean;
-  napcatInstallation: { directory: string; canLaunch: boolean; available: boolean } | null;
+  napcatInstallation: {
+    directory: string;
+    canLaunch: boolean;
+    available: boolean;
+    guidance?: string;
+    status?: string;
+  } | null;
+  napcatSetup: { busy: boolean; received: number; total: number; error?: string };
   onebotTokenConfigured: boolean;
   vaultAvailable: boolean;
   connection: string;
@@ -235,11 +243,14 @@ export interface ChatDSApi {
   disconnect(): Promise<void>;
   napcatBegin(session: string, link?: string): Promise<NapCatLoginStatus | null>;
   napcatChooseInstallation(): Promise<AppSnapshot['napcatInstallation']>;
+  napcatInstallPackage(source: 'download' | 'archive'): Promise<AppSnapshot['napcatInstallation']>;
+  napcatCancelInstall(): Promise<void>;
+  openQQDownload(): Promise<void>;
   napcatForgetInstallation(): Promise<void>;
   napcatLaunch(): Promise<void>;
   napcatCheck(): Promise<{ online: boolean; detail: string }>;
   napcatPoll(session: string, renew?: boolean): Promise<NapCatLoginStatus>;
-  napcatBind(session: string, ownerQQ: string): Promise<void>;
+  napcatBind(session: string, replaceAccount?: boolean): Promise<void>;
   napcatCancel(session: string): Promise<void>;
   napcatGuide(): Promise<void>;
   sandboxCheck(): Promise<{ available: boolean; reason?: string }>;

@@ -112,6 +112,7 @@ export const configSchema = z
         url: z.string().max(2048).refine(validateOneBotUrl, 'OneBot 需要本机 ws 或加密 wss 地址'),
         botQQ: z.union([qq, z.literal('')]),
         ownerQQ: z.union([qq, z.literal('')]),
+        friendChats: z.boolean().optional(),
         users: z.array(qq).max(500),
         groups: z.array(qq).max(500),
       })

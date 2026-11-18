@@ -14,9 +14,7 @@ $binary = Join-Path $programDir 'ChatDS.exe'
 $uninstall = Join-Path $programDir 'Uninstall ChatDS.exe'
 $database = Join-Path $userData 'chatds.sqlite'
 try {
-    # NSIS requires the unquoted /D path to appear at the very end.
-    $setup = Start-Process -FilePath $installer.FullName -ArgumentList "/S /currentuser /D=$programDir" -WindowStyle Hidden -PassThru
-    if (!$setup.WaitForExit(120000) -or $setup.ExitCode -ne 0) { throw 'NSIS installation failed or timed out.' }
+    & (Join-Path $PSScriptRoot 'test-installer-ui.ps1') -Installer $installer.FullName -CompleteOnHosted -InstallDirectory $programDir
     if (!(Test-Path -LiteralPath $binary -PathType Leaf) -or !(Test-Path -LiteralPath $uninstall -PathType Leaf)) {
         throw 'NSIS did not install the executable and uninstaller at the chosen destination.'
     }

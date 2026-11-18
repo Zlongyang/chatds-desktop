@@ -1,6 +1,6 @@
 {
   "name": "chatds-desktop",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "private": true,
   "description": "A local-first companion with controlled tools and pluggable messaging channels",
   "license": "GPL-3.0-only",
@@ -35,12 +35,14 @@
     "@earendil-works/pi-ai": "1.5.2",
     "ipaddr.js": "2.5.0",
     "qrcode": "1.5.4",
+    "unzipper": "0.12.5",
     "ws": "8.21.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
     "@types/qrcode": "1.5.6",
+    "@types/unzipper": "0.10.11",
     "@types/ws": "8.18.1",
     "electron": "45.3.3",
     "electron-builder": "26.18.0",

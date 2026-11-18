@@ -10,6 +10,7 @@ let session: string | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let pending = false;
 let switching = false;
+let attemptedDirectory: string | undefined;
 let formVersion = '',
   listVersion = '';
 
@@ -22,7 +23,7 @@ function showError(error?: unknown) {
   show('qq-error', !!message);
 }
 function configuredOneBot(s: AppSnapshot) {
-  return !!(s.config.onebot.botQQ && s.config.onebot.ownerQQ && s.onebotTokenConfigured);
+  return !!(s.config.onebot.botQQ && s.onebotTokenConfigured);
 }
 export function hasQQChannel(s: AppSnapshot) {
   return (
@@ -42,21 +43,23 @@ function renderEntry() {
   show('qq-management', online);
   get('qq-layout').classList.toggle('optional-only', !online);
   get('qq-section-title').textContent = canConfigure || session ? 'QQ 登录与接入' : '其他接入方式';
-  get('napcat-login-hint').textContent =
-    '使用上方安装目录中的 NapCat 登录。已登录时会直接识别机器人 QQ，更换账号请先在 NapCat 中切换。';
+  get('napcat-login-hint').textContent = '打开手机 QQ 扫码确认。登录状态仍有效时会自动连接。';
   show('napcat-entry', !session && (!configured || !online || switching));
   show('napcat-flow', !!session);
   show('qq-linked', configured && !session);
   show('qq-reconnect', !online && !['connecting', 'reconnecting'].includes(latest.connection));
   show('disconnect', latest.connection !== 'offline');
-  show('qq-switch', canScan && online && !switching);
+  show('qq-switch', canScan && configured && !session);
   get('qq-account').textContent =
     '机器人 QQ ' +
     (latest.account || latest.config.onebot.botQQ) +
-    ' · 主号 ' +
-    latest.config.onebot.ownerQQ;
+    (latest.config.onebot.ownerQQ ? ' · 主号 ' + latest.config.onebot.ownerQQ : '');
+  show('qq-continue', online);
+  get('qq-continue').textContent =
+    latest.keyConfigured || !latest.config.model.keyRequired ? '进入聊天' : '下一步：配置聊天模型';
+  show('qq-desktop-only', !configured && !latest.napcatInstallation && !latest.napcatSetup?.busy);
 }
-export function renderConnections(s: AppSnapshot) {
+export function renderConnections(s: AppSnapshot, visible = false) {
   const changed = latest?.napcatInstallation?.directory !== s.napcatInstallation?.directory;
   latest = s;
   if (changed && session) leaveConnections();
@@ -66,16 +69,32 @@ export function renderConnections(s: AppSnapshot) {
     field('qq-url').value = q.url;
     field('bot-qq').value = q.botQQ;
     field('owner-qq').value = q.ownerQQ;
+    field('qq-owner-manage').value = q.ownerQQ;
     field('qq-enabled').checked = q.enabled;
     formVersion = next;
   }
-  const lists = JSON.stringify([q.users, q.groups]);
+  const lists = JSON.stringify([q.users, q.groups, q.friendChats]);
   if (lists !== listVersion) {
     field('qq-users').value = q.users.join(', ');
     field('qq-groups').value = q.groups.join(', ');
+    field('qq-friend-chats').checked = !!q.friendChats;
     listVersion = lists;
   }
   renderEntry();
+  if (!s.napcatInstallation) attemptedDirectory = undefined;
+  if (
+    visible &&
+    !s.napcatSetup?.busy &&
+    s.napcatInstallation?.available &&
+    (!q.botQQ || q.enabled) &&
+    !hasQQChannel(s) &&
+    !session &&
+    !pending &&
+    s.napcatInstallation.directory !== attemptedDirectory
+  ) {
+    attemptedDirectory = s.napcatInstallation.directory;
+    void begin();
+  }
 }
 export function leaveConnections() {
   const previous = session;
@@ -89,7 +108,7 @@ export function leaveConnections() {
   if (previous) void api.napcatCancel(previous).catch(() => {});
   renderEntry();
 }
-function display(id: string, status: NapCatLoginStatus) {
+async function display(id: string, status: NapCatLoginStatus) {
   clearTimeout(timer);
   const messages = {
     waiting: status.qr ? '用机器人账号的手机 QQ 扫描下方二维码。' : '正在等 NapCat 生成二维码…',
@@ -108,10 +127,18 @@ function display(id: string, status: NapCatLoginStatus) {
     if (image.getAttribute('src') !== qr) image.src = qr;
   } else image.removeAttribute('src');
   show('napcat-qr', !!qr);
-  show('napcat-bind', status.phase === 'ready');
   show('napcat-renew', status.phase === 'waiting' || status.phase === 'expired');
   show('napcat-retry', false);
-  if (status.phase !== 'ready' && status.phase !== 'expired') {
+  if (status.phase === 'ready') {
+    get('napcat-state').textContent = '手机已确认，正在核对账号并连接 QQ…';
+    await api.napcatBind(id, switching);
+    if (session === id) {
+      leaveConnections();
+      renderConnections(await api.state());
+    }
+    return;
+  }
+  if (status.phase !== 'expired') {
     timer = setTimeout(() => void poll(id), 2000);
   }
 }
@@ -122,7 +149,7 @@ async function poll(id: string, renew = false) {
   showError();
   try {
     const result = await api.napcatPoll(id, renew);
-    if (session === id) display(id, result);
+    if (session === id) await display(id, result);
   } catch (e) {
     if (session === id) {
       get('napcat-state').textContent = '暂时无法读取登录状态。';
@@ -146,15 +173,12 @@ async function begin(link?: string) {
     link || latest?.napcatInstallation
       ? '正在连接本机 NapCat…'
       : '请选择这次登录使用的 NapCat 目录。';
-  for (const item of ['napcat-bind', 'napcat-renew', 'napcat-retry', 'napcat-qr'])
-    show(item, false);
-  field('napcat-owner').value = latest?.config.onebot.ownerQQ || '';
-  field('napcat-finish').disabled = false;
+  for (const item of ['napcat-renew', 'napcat-retry', 'napcat-qr']) show(item, false);
   renderEntry();
   try {
     const status = await api.napcatBegin(id, link);
     if (session !== id) return;
-    if (status) display(id, status);
+    if (status) await display(id, status);
     else leaveConnections();
   } catch (e) {
     if (session === id) {
@@ -184,27 +208,5 @@ get('napcat-cancel').onclick = () => {
 };
 get('qq-switch').onclick = () => {
   switching = true;
-  renderEntry();
-};
-get('napcat-bind').onsubmit = async (event) => {
-  event.preventDefault();
-  const id = session;
-  if (!id || pending) return;
-  showError();
-  pending = true;
-  field('napcat-finish').disabled = true;
-  try {
-    await api.napcatBind(id, field('napcat-owner').value.trim());
-    if (session === id) {
-      leaveConnections();
-      renderConnections(await api.state());
-    }
-  } catch (e) {
-    if (id === session) showError(e);
-  } finally {
-    if (id === session) {
-      pending = false;
-      field('napcat-finish').disabled = false;
-    }
-  }
+  void begin();
 };

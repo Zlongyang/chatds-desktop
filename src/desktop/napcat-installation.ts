@@ -1,29 +1,46 @@
-import { spawn, type SpawnOptions } from 'node:child_process';
+import { execFile, spawn, type SpawnOptions } from 'node:child_process';
 import { rmSync } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, open, opendir, realpath } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { release } from 'node:os';
 import { basename, dirname, isAbsolute, join, win32 } from 'node:path';
+import { promisify } from 'node:util';
 import { atomicJson, readJson } from '../shared/util.js';
+import { webUIFiles } from './napcat-location.js';
 
-type Launcher = 'napcat.bat' | 'launcher.bat' | 'launcher-win10.bat';
+type Launcher =
+  | 'napcat.bat'
+  | 'launcher.bat'
+  | 'launcher-win10.bat'
+  | 'launcher-user.bat'
+  | 'launcher-win10-user.bat';
+type Status =
+  'unconfigured' | 'ready' | 'starting' | 'port-in-use' | 'missing-qq' | 'manual' | 'invalid';
 export interface NapCatInstallationState {
   directory: string | null;
   launcher: Launcher | null;
   canStart: boolean;
   hasWebUIConfig: boolean;
   starting: boolean;
+  status: Status;
   guidance: string;
 }
 
 interface SavedInstallation {
   directory: string;
   launchedAt: number;
+  launcherPid?: number;
 }
 const cooldown = 45_000;
 
-async function file(directory: string, name: string): Promise<boolean> {
+async function file(directory: string, name = ''): Promise<boolean> {
   return (await lstat(join(directory, name)).catch(() => undefined))?.isFile() === true;
+}
+
+async function webUIFile(directory: string): Promise<string | undefined> {
+  const paths = webUIFiles(directory);
+  const present = await Promise.all(paths.map((path) => file(path)));
+  return paths.find((_, index) => present[index]);
 }
 
 function validDirectory(path: unknown): path is string {
@@ -82,25 +99,101 @@ function launcherEnvironment(): NodeJS.ProcessEnv {
   return environment;
 }
 
-async function startConsole(command: string, args: string[], options: SpawnOptions): Promise<void> {
+async function startConsole(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+): Promise<number | void> {
   const child = spawn(command, args, options);
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<number | void>((resolve, reject) => {
     child.once('error', () =>
       reject(new Error('无法打开 NapCat 启动窗口，请从安装目录手动启动。')),
     );
-    child.once('exit', (code) =>
-      code === 0 ? resolve() : reject(new Error('NapCat 启动命令失败，请从安装目录手动启动。')),
-    );
+    child.once('spawn', () => {
+      child.unref();
+      resolve(child.pid);
+    });
   });
 }
 
-async function portInUse(directory: string, hasConfig: boolean): Promise<boolean> {
+const runFile = promisify(execFile);
+async function windowsQuery(script: string): Promise<string> {
+  const env = launcherEnvironment();
+  const executable = win32.join(
+    env.SystemRoot || 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const result = await runFile(
+    executable,
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); ' + script,
+    ],
+    {
+      windowsHide: true,
+      timeout: 4000,
+      maxBuffer: 128 * 1024,
+      env,
+    },
+  );
+  return result.stdout.trim();
+}
+async function registeredQQ(): Promise<boolean> {
+  // Match the uninstall entry used by the upstream non-elevated Windows launchers.
+  const uninstall = await windowsQuery(
+    "$ErrorActionPreference = 'Stop'; $key = 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QQ'; " +
+      'if (Test-Path -LiteralPath $key) {(Get-ItemProperty -LiteralPath $key).UninstallString}',
+  );
+  const path =
+    /^"([^"]+\.exe)"(?:\s|$)/i.exec(uninstall)?.[1] ?? /^(.+?\.exe)(?:\s|$)/i.exec(uninstall)?.[1];
+  return !!path && win32.isAbsolute(path) && file(win32.dirname(path), 'QQ.exe');
+}
+async function installationProcess(directory: string, saved: SavedInstallation): Promise<boolean> {
+  // Only image paths are used. Neither process arguments nor account data are requested.
+  const pid = saved.launcherPid;
+  // Pair the pid with its creation time: Windows can reuse a pid after cmd exits.
+  const owned =
+    Number.isSafeInteger(pid) && Number.isSafeInteger(saved.launchedAt)
+      ? '$p = Get-Process -Id ' +
+        pid +
+        " -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'cmd' -and [Math]::Abs(([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() - " +
+        saved.launchedAt +
+        ") -lt 10000) { 'OWNED_LAUNCHER' }; "
+      : '';
+  const paths = await windowsQuery(
+    owned +
+      'Get-Process -Name NapCatWinBootMain,QQ,node -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Path) { $_.Path } }; exit 0',
+  );
+  const candidates = [
+    'NapCatWinBootMain.exe',
+    'QQ.exe',
+    'node.exe',
+    'napcat/NapCatWinBootMain.exe',
+    ...(basename(directory).toLowerCase() === 'napcat' ? ['../QQ.exe'] : []),
+  ].map((name) => win32.join(directory, name).toLowerCase());
+  return paths
+    .split(/\r?\n/)
+    .some((path) => path === 'OWNED_LAUNCHER' || candidates.includes(path.toLowerCase()));
+}
+interface LaunchHost {
+  platform: NodeJS.Platform;
+  build?: number;
+  startConsole?: typeof startConsole;
+  registeredQQ?: typeof registeredQQ;
+  running?: typeof installationProcess;
+  portInUse?: typeof portInUse;
+}
+
+async function portInUse(path: string | undefined): Promise<boolean> {
   let port = 6099;
   let host = '127.0.0.1';
-  if (hasConfig) {
-    const path = (await file(directory, 'config/webui.json'))
-      ? join(directory, 'config', 'webui.json')
-      : join(directory, 'webui.json');
+  if (path) {
     const config = await open(path, 'r');
     try {
       const stat = await config.stat();
@@ -127,28 +220,68 @@ async function portInUse(directory: string, hasConfig: boolean): Promise<boolean
       resolve(used);
     };
     socket.once('connect', () => finish(true));
-    socket.once('error', () => finish(false));
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      // Only a refused connection proves that the endpoint is free.
+      finish(error.code !== 'ECONNREFUSED');
+    });
     socket.setTimeout(800, () => finish(true));
   });
+}
+
+function withStatus(
+  state: NapCatInstallationState,
+  status: Status,
+  guidance: string,
+): NapCatInstallationState {
+  return {
+    ...state,
+    status,
+    guidance,
+    canStart: status === 'ready',
+    starting: status === 'starting',
+  };
+}
+async function safeBatch(directory: string, name: Launcher): Promise<boolean> {
+  if (name === 'launcher.bat' || name === 'launcher-win10.bat') return false;
+  const handle = await open(join(directory, name), 'r');
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 64 * 1024) return false;
+    const script = await handle.readFile('utf8');
+    // Some repackaged batches with a user-launcher name still request UAC or run the installer.
+    return (
+      !!script.trim() &&
+      !script.includes('\0') &&
+      !/\brun\s*as\b|\bNapCatInstaller(?:\.exe)?\b|requireAdministrator/i.test(script)
+    );
+  } finally {
+    await handle.close();
+  }
 }
 
 export class NapCatInstallation {
   private readonly path: string;
   private saved?: SavedInstallation;
-  private launching = false;
+  private pending?: Promise<NapCatInstallationState>;
   private selection = 0;
 
   constructor(
     directory: string,
-    private readonly host = { platform: process.platform, startConsole },
+    private readonly host: LaunchHost = { platform: process.platform, startConsole },
   ) {
     this.path = join(directory, 'napcat-installation.json');
     try {
       const saved = readJson<Partial<SavedInstallation> | null>(this.path, null);
       if (validDirectory(saved?.directory))
-        this.saved = { directory: saved.directory, launchedAt: Number(saved.launchedAt) || 0 };
+        this.saved = {
+          directory: saved.directory,
+          launchedAt: Number(saved.launchedAt) || 0,
+          ...(Number.isSafeInteger(saved.launcherPid) && Number(saved.launcherPid) > 0
+            ? { launcherPid: saved.launcherPid }
+            : {}),
+        };
     } catch {
-      /* A stale settings file can be replaced by selecting a directory again. */
+      /* A stale setting can be replaced from the directory picker. */
     }
   }
 
@@ -159,38 +292,107 @@ export class NapCatInstallation {
       canStart: false,
       hasWebUIConfig: false,
       starting: false,
+      status: 'unconfigured',
       guidance: '选择已解压的 NapCat 安装目录或 config 目录。',
     };
     if (!directory) return state;
-    if (!(await lstat(directory).catch(() => undefined))?.isDirectory()) {
-      state.guidance = '安装目录已移动或无法读取，请重新选择。';
-      return state;
-    }
-    const build = Number(release().split('.')[2]);
-    const names: Launcher[] =
-      this.host.platform === 'win32' && build < 22000
-        ? ['napcat.bat', 'launcher-win10.bat', 'launcher.bat']
-        : ['napcat.bat', 'launcher.bat', 'launcher-win10.bat'];
-    const [found, rootConfig, directConfig, installer] = await Promise.all([
+    if (!(await lstat(directory).catch(() => undefined))?.isDirectory())
+      return withStatus(state, 'invalid', '安装目录已移动或无法读取，请重新选择。');
+    const win10 = (this.host.build ?? Number(release().split('.')[2])) < 22000;
+    const names: Launcher[] = win10
+      ? [
+          'napcat.bat',
+          'launcher-win10-user.bat',
+          'launcher-user.bat',
+          'launcher-win10.bat',
+          'launcher.bat',
+        ]
+      : [
+          'napcat.bat',
+          'launcher-user.bat',
+          'launcher-win10-user.bat',
+          'launcher.bat',
+          'launcher-win10.bat',
+        ];
+    const [found, config, installer] = await Promise.all([
       Promise.all(names.map((name) => file(directory, name))),
-      file(directory, 'config/webui.json'),
-      file(directory, 'webui.json'),
+      webUIFile(directory),
       file(directory, 'NapCatInstaller.exe'),
     ]);
-    state.hasWebUIConfig = rootConfig || directConfig;
-    state.launcher = names.find((_, index) => found[index]) ?? null;
-    const elapsed = Date.now() - (this.saved?.launchedAt || 0);
-    state.starting =
-      this.saved?.directory === directory &&
-      (this.launching || (elapsed >= 0 && elapsed < cooldown));
-    state.canStart = this.host.platform === 'win32' && !!state.launcher && !state.starting;
-    if (state.starting) state.guidance = '启动窗口已请求打开。请完成 NapCat 的提示，再检查连接。';
-    else if (state.canStart) state.guidance = '可在这里启动 NapCat。已经运行时可直接检查连接。';
-    else if (installer)
-      state.guidance =
-        '请先运行 NapCatInstaller.exe 完成安装，再选择生成的 NapCat.XXXX.Shell 目录。';
-    else state.guidance = '请在外部启动 NapCat，再检查连接或使用 WebUI 登录链接。';
-    return state;
+    state.launcher = names.find((_, i) => found[i]) ?? null;
+    state.hasWebUIConfig = !!config;
+    try {
+      if ((config || state.launcher) && (await (this.host.portInUse ?? portInUse)(config)))
+        return withStatus(
+          state,
+          'port-in-use',
+          'WebUI 端口已在使用，请检查连接以确认是否为所选 NapCat。',
+        );
+      const elapsed = Date.now() - (this.saved?.launchedAt || 0);
+      if (this.saved?.directory === directory && elapsed >= 0 && elapsed < cooldown)
+        return withStatus(state, 'starting', '已请求启动 NapCat，正在等待 WebUI。');
+      if (!state.launcher || this.host.platform !== 'win32')
+        return withStatus(
+          state,
+          'manual',
+          installer
+            ? '请先运行 NapCatInstaller.exe 完成安装，再选择生成的 NapCat.XXXX.Shell 目录。'
+            : '请从安装目录手动启动 NapCat，再检查 WebUI 连接。',
+        );
+      if (!(await safeBatch(directory, state.launcher)))
+        return withStatus(
+          state,
+          'manual',
+          '当前安装包的启动器需要手动运行。请从该目录启动 NapCat，或使用包含免提权启动器的官方包。',
+        );
+      if (state.launcher === 'napcat.bat') {
+        const [qq, node, wrapper, entry] = await Promise.all(
+          ['QQ.exe', 'node.exe', 'wrapper.node', 'index.js'].map((name) => file(directory, name)),
+        );
+        const packagedQQ =
+          qq ||
+          (basename(directory).toLowerCase() === 'napcat' &&
+            (await file(dirname(directory), 'QQ.exe')));
+        if (!packagedQQ && !(node && wrapper && entry))
+          return withStatus(
+            state,
+            'missing-qq',
+            '此安装包缺少配套 QQ 运行文件。请使用已安装的一键包目录，或重新完整解压官方 Windows.Node 包。',
+          );
+      } else {
+        if (!(await (this.host.registeredQQ ?? registeredQQ)()))
+          return withStatus(
+            state,
+            'missing-qq',
+            '免提权 Shell 启动器未找到已安装的 Windows QQ。请安装或修复 QQ NT 后重试；也可以选择已完成安装的 NapCat 一键包目录。',
+          );
+        const components = await Promise.all(
+          ['napcat.mjs', 'NapCatWinBootMain.exe', 'NapCatWinBootHook.dll'].map((name) =>
+            file(directory, name),
+          ),
+        );
+        if (components.includes(false))
+          return withStatus(
+            state,
+            'invalid',
+            'Shell 运行文件不完整，请重新完整解压官方 NapCat.Shell.zip 并选择解压目录。',
+          );
+      }
+      const saved = this.saved?.directory === directory ? this.saved : { directory, launchedAt: 0 };
+      if (await (this.host.running ?? installationProcess)(directory, saved))
+        return withStatus(
+          state,
+          'starting',
+          '此安装目录已存在启动中的 NapCat 进程。请等待 WebUI 或检查启动窗口。',
+        );
+      return withStatus(state, 'ready', '可以启动所选目录中的 NapCat。');
+    } catch (error) {
+      const reason =
+        error instanceof Error && /WebUI/.test(error.message)
+          ? error.message
+          : '无法检查 NapCat 的启动环境，请从安装目录手动启动或重新选择目录。';
+      return withStatus(state, 'invalid', reason);
+    }
   }
 
   state(): Promise<NapCatInstallationState> {
@@ -206,25 +408,52 @@ export class NapCatInstallation {
   }
 
   async select(pickedDirectory: string): Promise<NapCatInstallationState> {
-    if (this.launching) throw new Error('正在打开启动窗口，请稍候。');
+    if (this.pending) throw new Error('正在检查启动环境，请稍候。');
     const selection = ++this.selection;
     if (!validDirectory(pickedDirectory)) throw new Error('请选择本机安装目录。');
     const picked = await realpath(pickedDirectory).catch(() => '');
     if (!validDirectory(picked) || !(await lstat(picked)).isDirectory())
       throw new Error('无法读取所选目录。');
-    const configPicked = basename(picked).toLowerCase() === 'config';
-    const directory = configPicked ? dirname(picked) : picked;
-    const info = await this.inspect(directory);
+    let directory = basename(picked).toLowerCase() === 'config' ? dirname(picked) : picked;
     if (
-      !configPicked &&
-      !info.launcher &&
-      !info.hasWebUIConfig &&
-      !(await file(directory, 'napcat.mjs')) &&
-      !(await file(directory, 'NapCatInstaller.exe'))
+      basename(directory).toLowerCase() === 'napcat' &&
+      (await file(dirname(directory), 'napcat.bat'))
     )
-      throw new Error('未找到 NapCat。请选择解压后的安装目录、已安装的 Shell 目录或 config 目录。');
-    if (this.launching) throw new Error('正在打开启动窗口，请稍候。');
-    if (selection !== this.selection) throw new Error('所选目录已变更。');
+      directory = dirname(directory);
+    if (
+      !(await file(directory, 'napcat.bat')) &&
+      (await file(directory, 'QQ.exe')) &&
+      (await file(directory, 'napcat/napcat.bat'))
+    )
+      directory = join(directory, 'napcat');
+    let info = await this.inspect(directory);
+    if (!info.launcher && !info.hasWebUIConfig && !(await file(directory, 'napcat.mjs'))) {
+      // Only examine named immediate package directories inside the user's selection.
+      const children: string[] = [];
+      let scanned = 0;
+      for await (const entry of await opendir(directory)) {
+        if (++scanned > 100) break;
+        if (
+          entry.isDirectory() &&
+          /^NapCat\.(?:[\w.-]{1,64}\.)?Shell(?:\.Windows\.Node)?$/i.test(entry.name)
+        )
+          children.push(join(directory, entry.name));
+      }
+      if (children.length > 1)
+        throw new Error('找到多个 NapCat Shell 目录，请直接选择要使用的那个。');
+      if (children.length === 1) {
+        const nested = await this.inspect(children[0]!);
+        if (nested.launcher || nested.hasWebUIConfig) {
+          directory = children[0]!;
+          info = nested;
+        }
+      }
+      if (!info.launcher && !info.hasWebUIConfig && !(await file(directory, 'NapCatInstaller.exe')))
+        throw new Error(
+          '未找到 NapCat。请选择解压后的安装目录、已安装的 Shell 目录或 config 目录。',
+        );
+    }
+    if (this.pending || selection !== this.selection) throw new Error('所选目录已变更。');
     if (directory !== this.saved?.directory) {
       const next = { directory, launchedAt: 0 };
       atomicJson(this.path, next);
@@ -233,53 +462,87 @@ export class NapCatInstallation {
     return info;
   }
 
-  async start(): Promise<NapCatInstallationState> {
-    if (this.launching) throw new Error('启动请求正在处理。');
+  ensureStarted(): Promise<NapCatInstallationState> {
+    return this.pending ?? this.launch(true);
+  }
+
+  start(): Promise<NapCatInstallationState> {
+    if (this.pending) return Promise.reject(new Error('启动请求正在处理。'));
+    return this.launch(false);
+  }
+
+  private launch(automatic: boolean): Promise<NapCatInstallationState> {
+    const task = this.prepareAndStart(automatic);
+    this.pending = task.finally(() => {
+      this.pending = undefined;
+    });
+    return this.pending;
+  }
+
+  private async prepareAndStart(automatic: boolean): Promise<NapCatInstallationState> {
     const saved = this.saved;
-    if (!saved) throw new Error('请先选择 NapCat 安装目录。');
-    const elapsed = Date.now() - saved.launchedAt;
-    if (elapsed >= 0 && elapsed < cooldown) throw new Error('启动窗口已请求打开，请先检查连接。');
-    this.launching = true;
+    const info = await this.inspect(saved?.directory ?? null);
+    const blocked = (state: NapCatInstallationState) => {
+      if (automatic) return state;
+      throw new Error(state.guidance);
+    };
+    if (!info.canStart || !saved || !info.launcher) return blocked(info);
+    if (saved !== this.saved) return blocked(await this.state());
+    if (
+      saved !== this.saved ||
+      (await realpath(saved.directory).catch(() => '')) !== saved.directory ||
+      !(await file(saved.directory, info.launcher)) ||
+      !(await safeBatch(saved.directory, info.launcher))
+    )
+      return blocked(withStatus(info, 'invalid', '安装目录或启动器已变更，请重新选择。'));
+    // An external launcher can bring up its listener during the process/QQ preflight.
+    let occupied;
     try {
-      const info = await this.inspect(saved.directory);
-      if (this.host.platform !== 'win32' || !info.launcher)
-        throw new Error('请从安装目录手动启动 NapCat。');
-      if (await portInUse(saved.directory, info.hasWebUIConfig))
-        throw new Error('WebUI 端口已在使用，请先检查连接。');
-      // Resolve again on each explicit start in case the selected directory was moved or replaced.
-      if (
-        (await realpath(saved.directory)) !== saved.directory ||
-        !(await file(saved.directory, info.launcher))
-      )
-        throw new Error('安装目录或启动器已变更，请重新选择。');
-      if (saved !== this.saved) throw new Error('所选目录已变更。');
-      const next = { ...saved, launchedAt: Date.now() };
-      atomicJson(this.path, next);
-      this.saved = next;
-      try {
-        // START opens the external interactive console. User paths are passed only as cwd.
-        const env = launcherEnvironment();
-        await this.host.startConsole(
-          env.ComSpec!,
-          ['/d', '/v:off', '/c', 'start', '""', 'cmd', '/d', '/v:off', '/c', '.\\' + info.launcher],
-          {
-            cwd: next.directory,
-            env,
-            stdio: 'ignore',
-            windowsHide: true,
-            windowsVerbatimArguments: true,
-          },
-        );
-      } catch (error) {
-        if (this.saved === next) {
-          atomicJson(this.path, saved);
-          this.saved = saved;
-        }
-        throw error;
-      }
-    } finally {
-      this.launching = false;
+      occupied = await (this.host.portInUse ?? portInUse)(await webUIFile(saved.directory));
+    } catch {
+      return blocked(withStatus(info, 'invalid', 'WebUI 配置已变更，请检查配置后重试。'));
     }
-    return this.state();
+    if (occupied)
+      return blocked(
+        withStatus(info, 'port-in-use', 'WebUI 端口已在使用，请检查连接以确认是否为所选 NapCat。'),
+      );
+    if (saved !== this.saved) return blocked(await this.state());
+    const next: SavedInstallation = { directory: saved.directory, launchedAt: Date.now() };
+    atomicJson(this.path, next);
+    this.saved = next;
+    let pid: number | void;
+    try {
+      // No user-controlled path is interpolated into a command; only a fixed launcher name is passed to cmd.
+      const env = launcherEnvironment();
+      pid = await (this.host.startConsole ?? startConsole)(
+        env.ComSpec!,
+        ['/d', '/v:off', '/c', '.\\' + info.launcher],
+        {
+          cwd: saved.directory,
+          env,
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: automatic,
+          windowsVerbatimArguments: true,
+        },
+      );
+    } catch {
+      if (this.saved === next) {
+        atomicJson(this.path, saved);
+        this.saved = saved;
+      }
+      return blocked(withStatus(info, 'invalid', '无法打开 NapCat 启动器，请从安装目录手动启动。'));
+    }
+    if (this.saved !== next) return this.state();
+    if (pid) {
+      next.launcherPid = pid;
+      // The cooldown is already durable. A secondary metadata write failing must not undo it.
+      try {
+        atomicJson(this.path, next);
+      } catch {
+        /* Process-path detection remains available. */
+      }
+    }
+    return withStatus(info, 'starting', '已请求启动 NapCat，正在等待 WebUI。');
   }
 }

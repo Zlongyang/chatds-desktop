@@ -24,6 +24,9 @@ import { ModelHost, keyReference } from './model.js';
 import { TestModelHost } from './test-model.js';
 import { NapCatSession } from './napcat.js';
 import { NapCatInstallation } from './napcat-installation.js';
+import { installNapCatPackage } from './napcat-package.js';
+import { takeInstallerChoice } from './installer-choice.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { locationFromFolder, locationFromLink } from './napcat-location.js';
 import { ModelVerification, probeModel } from './model-verification.js';
 import { RpcPeer } from '../shared/rpc.js';
@@ -88,12 +91,16 @@ async function start(): Promise<void> {
   const verification = new ModelVerification(directory);
   const installation = new NapCatInstallation(directory);
   let napcatInstall = await installation.state();
+  const napcatSetup: AppSnapshot['napcatSetup'] = { busy: false, received: 0, total: 0 };
+  let installing: AbortController | undefined;
   const installationView = (): AppSnapshot['napcatInstallation'] =>
     napcatInstall.directory
       ? {
           directory: napcatInstall.directory,
           canLaunch: napcatInstall.canStart,
-          available: napcatInstall.canStart || napcatInstall.hasWebUIConfig,
+          available: !!napcatInstall.launcher || napcatInstall.hasWebUIConfig,
+          guidance: napcatInstall.guidance,
+          status: napcatInstall.status,
         }
       : null;
   const onebot = new OneBot(
@@ -295,6 +302,7 @@ async function start(): Promise<void> {
       keyConfigured: !!vault.get(keyReference(config.value.model)),
       modelVerified: verification.verified(config.value.model),
       napcatInstallation: installationView(),
+      napcatSetup: { ...napcatSetup },
       onebotTokenConfigured: !!vault.get('onebot'),
       vaultAvailable: vault.available,
       connection: onebot.status,
@@ -388,6 +396,35 @@ async function start(): Promise<void> {
     return sandboxProbe;
   }
   if (config.value.tools.sandbox_exec) void checkSandbox();
+  async function installPackage(archive?: string) {
+    if (installing) throw new Error('NapCat 安装正在进行。');
+    const controller = new AbortController();
+    installing = controller;
+    Object.assign(napcatSetup, { busy: true, received: 0, total: 0, error: undefined });
+    notify();
+    try {
+      const folder = await installNapCatPackage(directory, {
+        archive,
+        signal: controller.signal,
+        onProgress(received, total) {
+          Object.assign(napcatSetup, { received, total });
+          notify();
+        },
+      });
+      controller.signal.throwIfAborted();
+      napcatInstall = await installation.select(folder);
+      closePairing();
+      napcatInstall = await installation.ensureStarted();
+      return installationView();
+    } catch (error) {
+      napcatSetup.error = controller.signal.aborted ? '已取消安装。' : errorText(error);
+      throw new Error(napcatSetup.error);
+    } finally {
+      installing = undefined;
+      napcatSetup.busy = false;
+      notify();
+    }
+  }
   const handlers: Record<string, (...args: any[]) => unknown | Promise<unknown>> = {
     state: () => snapshot(),
     configure: async (input: unknown) => {
@@ -404,8 +441,25 @@ async function start(): Promise<void> {
       await applySettings(change);
       return snapshot();
     },
-    napcatGuide: () => shell.openExternal('https://doc.napneko.icu/guide/boot/Shell'),
+    napcatGuide: () =>
+      shell.openExternal(
+        'https://github.com/NapNeko/NapCatQQ/blob/9335843246e3b7a17944861f3ac8731a259732c2/LICENSE',
+      ),
+    openQQDownload: () => shell.openExternal('https://im.qq.com/pcqq/index.shtml'),
+    napcatCancelInstall: () => installing?.abort(),
+    napcatInstallPackage: async (source: unknown) => {
+      z.enum(['download', 'archive']).parse(source);
+      if (source === 'download') return installPackage();
+      const chosen = await dialog.showOpenDialog(win!, {
+        title: '选择 NapCat.Shell.zip',
+        properties: ['openFile'],
+        filters: [{ name: 'NapCat Shell', extensions: ['zip'] }],
+      });
+      if (chosen.canceled) return null;
+      return installPackage(chosen.filePaths[0]);
+    },
     napcatChooseInstallation: async () => {
+      if (installing) throw new Error('请先等待 NapCat 安装结束。');
       const chosen = await dialog.showOpenDialog(win!, {
         title: '选择本机 NapCat 安装目录',
         properties: ['openDirectory'],
@@ -413,12 +467,16 @@ async function start(): Promise<void> {
       });
       if (chosen.canceled) return null;
       napcatInstall = await installation.select(chosen.filePaths[0]!);
+      napcatSetup.error = undefined;
       closePairing();
+      napcatInstall = await installation.ensureStarted();
       notify();
       return installationView();
     },
     napcatForgetInstallation: async () => {
+      if (installing) throw new Error('请先取消正在进行的安装。');
       napcatInstall = await installation.clear();
+      napcatSetup.error = undefined;
       closePairing();
       notify();
     },
@@ -462,10 +520,33 @@ async function start(): Promise<void> {
             }
             folder = picked.filePaths[0]!;
           }
-          location = await locationFromFolder(folder);
+          napcatInstall = await installation.ensureStarted();
+          notify();
+          const deadline =
+            Date.now() +
+            (napcatInstall.status === 'starting' || napcatInstall.status === 'port-in-use'
+              ? 60000
+              : 0);
+          for (;;) {
+            if (pairing !== slot || quitting) throw new Error('本次扫码已取消。');
+            try {
+              location = await locationFromFolder(folder);
+              slot.client = new NapCatSession(location.origin, location.token);
+              await slot.client.checkWebUI();
+              break;
+            } catch (error) {
+              slot.client?.close();
+              slot.client = undefined;
+              if (Date.now() >= deadline || !/无法连接本机|没有 webui\.json/.test(errorText(error)))
+                throw new Error(
+                  napcatInstall.status === 'missing-qq' ? napcatInstall.guidance : errorText(error),
+                );
+              await delay(850);
+            }
+          }
         } else location = locationFromLink(link);
         if (pairing !== slot) throw new Error('本次扫码已取消。');
-        slot.client = new NapCatSession(location.origin, location.token);
+        slot.client ??= new NapCatSession(location.origin, location.token);
         slot.expiry = setTimeout(closePairing, 10 * 60 * 1000);
         slot.expiry.unref();
         const status = await slot.client.status();
@@ -493,15 +574,14 @@ async function start(): Promise<void> {
     napcatCancel: (key: unknown) => {
       if (pairing?.id === key) closePairing();
     },
-    napcatBind: async (key: unknown, value: unknown) => {
+    napcatBind: async (key: unknown, replaceAccount = false) => {
       const { slot, client } = activePairing(key);
       if (slot.busy) throw new Error('正在处理扫码登录，请稍候。');
-      const owner = z
-        .string()
-        .regex(/^\d{5,12}$/, '请填写自己的 QQ 号。')
-        .parse(value);
       if (!slot.botQQ) throw new Error('请先完成扫码登录。');
-      if (slot.botQQ === owner) throw new Error('请填写与你的机器人账号不同的个人 QQ 号。');
+      const previousBot = config.value.onebot.botQQ;
+      const switching = !!previousBot && previousBot !== slot.botQQ;
+      if (switching && replaceAccount !== true)
+        throw new Error('登录的是另一个 QQ。请核对手机账号，或点击「更换登录账号」。');
       if (!vault.available) throw new Error('无法加密保存连接令牌，请检查本机凭据库。');
       slot.busy = true;
       try {
@@ -511,7 +591,17 @@ async function start(): Promise<void> {
           if (pairing !== slot || before !== JSON.stringify(config.value.onebot))
             throw new Error('连接设置已变化，请重新扫码。');
         };
-        await confirmOwner(previousOwner, owner);
+        if (switching) {
+          const answer = await dialog.showMessageBox(win!, {
+            type: 'question',
+            message: '更换小鱼登录的 QQ？',
+            detail: '新账号会重新设置主号和聊天名单。',
+            buttons: ['取消', '更换账号'],
+            defaultId: 0,
+            cancelId: 0,
+          });
+          if (answer.response !== 1) throw new Error('已取消更换 QQ。');
+        }
         check();
         const connection = await client.provision(slot.botQQ);
         check();
@@ -525,7 +615,8 @@ async function start(): Promise<void> {
                 enabled: true,
                 url: connection.url,
                 botQQ: connection.botQQ,
-                ownerQQ: owner,
+                ...(switching ? { ownerQQ: '', users: [], groups: [] } : {}),
+                friendChats: !previousBot || switching ? true : config.value.onebot.friendChats,
               },
             },
             onebotToken: connection.token,
@@ -817,6 +908,7 @@ async function start(): Promise<void> {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    installing?.abort();
     closePairing();
     clearTimeout(stateTimer);
     broker.cancel();
@@ -836,6 +928,27 @@ async function start(): Promise<void> {
       app.quit();
     })();
   });
+  if (!isTest) {
+    void (async () => {
+      const choice = await takeInstallerChoice(directory);
+      if (choice?.action === 'directory') {
+        napcatInstall = await installation.select(choice.directory);
+      } else if (
+        choice?.action === 'download' &&
+        !napcatInstall.directory &&
+        !config.value.onebot.botQQ
+      ) {
+        await installPackage();
+        return;
+      }
+      if (napcatInstall.directory && (!config.value.onebot.botQQ || config.value.onebot.enabled))
+        napcatInstall = await installation.ensureStarted();
+      notify();
+    })().catch((error) => {
+      napcatSetup.error = errorText(error);
+      notify();
+    });
+  }
   if (config.value.onebot.enabled && !isTest) {
     try {
       onebot.start();
@@ -989,19 +1102,14 @@ async function testQQPairing() {
   if (visible('napcat-choose') || visible('qq-management') || !visible('napcat-installation'))
     throw new Error('未配置时没有显示独立的 NapCat 安装设置');
   find('napcat-installation').click();
-  await wait(() => visible('napcat-choose'));
   if (visible('qq-management') || nav('connections').getClientRects().length)
     throw new Error('只有安装目录时显示了 QQ 业务入口');
-  find('napcat-choose').click();
   await wait(
     () =>
       !find('napcat-qr').classList.contains('hidden') &&
       (find('napcat-qr') as HTMLImageElement).naturalWidth > 0,
   );
   await wait(() => find('napcat-state').textContent!.includes('在手机 QQ 上确认'));
-  await wait(() => !find('napcat-bind').classList.contains('hidden'));
-  (find('napcat-owner') as HTMLInputElement).value = '10002';
-  (find('napcat-bind') as HTMLFormElement).requestSubmit();
   await wait(() => find('qq-status').textContent === 'QQ 在线');
   const state = await window.chatds.state();
   if (!visible('qq-management') || !nav('connections').getClientRects().length)
@@ -1023,8 +1131,6 @@ async function testQQPairing() {
   if (visible('napcat-choose') || !visible('qq-reconnect'))
     throw new Error('仅配置 OneBot 时显示了错误的登录入口');
   return (
-    state.account === '10001' &&
-    state.config.onebot.ownerQQ === '10002' &&
-    state.onebotTokenConfigured
+    state.account === '10001' && state.config.onebot.ownerQQ === '' && state.onebotTokenConfigured
   );
 }

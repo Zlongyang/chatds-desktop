@@ -191,6 +191,11 @@ async function ui(action, data) {
   switch (action) {
     case 'setup':
       await wait(
+        () => visible($('#page-connections')) && visible($('#qq-desktop-only')),
+        'fresh QQ setup',
+      );
+      $('#qq-desktop-only').click();
+      await wait(
         () =>
           visible($('#model-form')) &&
           !$('#model-fields').disabled &&

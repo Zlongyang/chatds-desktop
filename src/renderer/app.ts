@@ -152,6 +152,11 @@ $('#chat-web-settings').onclick = () => {
   document.getElementById('tool-web_read')?.focus();
 };
 $('#room-connect').onclick = $('#setup-qq').onclick = () => navigate('connections');
+$('#qq-desktop-only').onclick = () => {
+  localStorage.setItem('chatds-desktop-only', 'yes');
+  navigate(state && modelReady(state) ? 'chat' : 'settings');
+};
+$('#qq-continue').onclick = () => navigate(state && modelReady(state) ? 'chat' : 'settings');
 $('#setup-persona').onclick = () => navigate('persona');
 $('#setup-chat').onclick = () => {
   chooseRoom('desktop:owner');
@@ -194,8 +199,8 @@ function roomSettings(): ConversationSettings {
 function render() {
   if (!state) return;
   const s = state;
-  renderConnections(s);
-  renderNapcatSettings(s.napcatInstallation);
+  renderConnections(s, page === 'connections');
+  renderNapcatSettings(s.napcatInstallation, s.napcatSetup);
   const hasQQ = hasQQChannel(s);
   $('[data-page="connections"]').classList.toggle('hidden', !hasQQ);
   const activeNav = page === 'connections' && !hasQQ ? 'settings' : page;
@@ -902,8 +907,8 @@ $('#onebot-form').onsubmit = (event) => {
     const config = state!.config.onebot;
     const botQQ = field('#bot-qq').value.trim(),
       ownerQQ = field('#owner-qq').value.trim();
-    if (!/^\d{5,12}$/.test(botQQ) || !/^\d{5,12}$/.test(ownerQQ) || botQQ === ownerQQ)
-      throw new Error('请分别填写机器人和自己的 QQ 号，两者应为不同账号。');
+    if (!/^\d{5,12}$/.test(botQQ) || (ownerQQ && !/^\d{5,12}$/.test(ownerQQ)) || botQQ === ownerQQ)
+      throw new Error('请核对登录 QQ。选填的主号必须是另一个账号。');
     if (!token && (!state!.onebotTokenConfigured || config.url !== field('#qq-url').value.trim()))
       throw new Error('请填写这个服务的 Access Token。');
     await api.configure({
@@ -932,11 +937,21 @@ $('#qq-access').onsubmit = (event) => {
             ...state!.config.onebot,
             users: qqList(field('#qq-users').value),
             groups: qqList(field('#qq-groups').value),
+            friendChats: field('#qq-friend-chats').checked,
           },
         },
       }),
     '聊天名单已保存',
   );
+};
+$('#qq-owner-form').onsubmit = (event) => {
+  event.preventDefault();
+  void act(async () => {
+    const ownerQQ = field('#qq-owner-manage').value.trim();
+    if (ownerQQ === state!.config.onebot.botQQ)
+      throw new Error('主号应是另一个由你本人使用的 QQ。');
+    await api.configure({ config: { onebot: { ...state!.config.onebot, ownerQQ } } });
+  }, '主号已保存');
 };
 $('#qq-reconnect').onclick = () => act(() => api.connect());
 $('#disconnect').onclick = () => act(() => api.disconnect());
@@ -977,7 +992,19 @@ field('#auto-memory').onchange = () =>
 field('#startup').onchange = () => act(() => api.loginStartup(field('#startup').checked));
 void (async () => {
   await refresh();
+  const firstQQ =
+    state &&
+    !state.testMode &&
+    (state.napcatInstallation
+      ? !state.config.onebot.botQQ || (state.config.onebot.enabled && !hasQQChannel(state))
+      : !state.config.onebot.botQQ &&
+        !localStorage.getItem('chatds-desktop-only') &&
+        !modelReady(state));
   navigate(
-    location.hash === '#napcat' ? 'connections' : state && !modelReady(state) ? 'settings' : 'chat',
+    location.hash === '#napcat' || firstQQ
+      ? 'connections'
+      : state && !modelReady(state)
+        ? 'settings'
+        : 'chat',
   );
 })();

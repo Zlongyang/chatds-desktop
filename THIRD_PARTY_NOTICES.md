@@ -26,5 +26,10 @@ The companion prompt and permission architecture were independently implemented 
 - Zod, Colin McDonnell and contributors: MIT. https://github.com/colinhacks/zod
 - ipaddr.js, whitequark and contributors: MIT. https://github.com/whitequark/ipaddr.js
 - node-qrcode, Ryan Day and contributors: MIT. https://github.com/soldair/node-qrcode
+- unzipper, contributors: MIT. https://github.com/ZJONSSON/node-unzipper
+
+## Optional NapCat connection
+
+The Windows setup wizard can request a separate download of the unmodified NapCat Shell 4.18.42 archive on first launch. Users can also select an existing installation. The pinned archive is identified by SHA-256 `02e5ff0f79916c1e04c81c1b4590056406fb4293f1f1300c955e71fd08b2829d`. See the [original license](https://github.com/NapNeko/NapCatQQ/blob/9335843246e3b7a17944861f3ac8731a259732c2/LICENSE) and [release archive](https://github.com/XingYunStar/NapCatQQ/releases/tag/v4.18.42).
 
 Dependency license texts remain in the installed packages. Electron's distribution includes its LICENSE and LICENSES.chromium.html. The package lock records transitive dependencies. No NapCat binaries, QQ client, personal character card, account cache or private data are distributed.

@@ -106,21 +106,30 @@
         <section id="page-connections" class="page hidden">
           <article class="card padded napcat-environment">
             <div class="section-heading">
-              <h2>本机 NapCat（可选）</h2>
+              <h2>准备 QQ 登录环境</h2>
               <span id="napcat-environment-state" class="badge">未选择目录</span>
             </div>
             <p id="napcat-directory-label">NapCat 安装目录</p>
             <p id="napcat-directory" aria-labelledby="napcat-directory-label">尚未选择</p>
             <div class="row">
-              <button id="napcat-installation" class="primary">选择安装目录</button>
+              <button id="napcat-download" class="primary">下载并启动 NapCat</button>
+              <button id="napcat-installation">选择已有目录</button>
+              <button id="napcat-import-zip">导入离线 ZIP</button>
+              <button id="napcat-cancel-install" class="hidden">取消安装</button>
               <button id="napcat-launch" class="hidden">启动 NapCat</button>
               <button id="napcat-check" class="hidden">检查 WebUI</button>
               <button id="napcat-forget" class="subtle hidden">取消关联</button>
-              <button id="napcat-guide" class="subtle">NapCat 安装指南</button>
+              <button id="napcat-qq-download" class="subtle hidden">下载 Windows QQ</button>
+              <button id="napcat-guide" class="subtle">原版许可</button>
             </div>
             <p id="napcat-environment-note" role="status" aria-live="polite" class="muted">
               已安装 NapCat？选择它在这台电脑上的文件夹。
             </p>
+            <p class="footnote">
+              使用 Windows QQ 客户端和 NapCat Shell。下载使用 GitHub 社区留档的 v4.18.42
+              原包，安装前校验 SHA-256。
+            </p>
+            <button id="qq-desktop-only" type="button" class="subtle">仅使用桌面聊天</button>
           </article>
           <div class="page-grid" id="qq-layout">
             <article class="card padded">
@@ -133,7 +142,8 @@
                 <div class="row">
                   <button type="button" id="qq-reconnect">重新连接</button>
                   <button type="button" id="disconnect">断开连接</button>
-                  <button type="button" id="qq-switch" class="subtle">重新绑定 NapCat</button>
+                  <button type="button" id="qq-switch" class="subtle">更换登录账号</button>
+                  <button type="button" id="qq-continue" class="primary hidden">继续</button>
                 </div>
               </div>
               <div id="napcat-entry">
@@ -165,23 +175,10 @@
                   height="200"
                   alt="请用机器人账号的手机 QQ 扫描此登录码"
                 />
-                <form id="napcat-bind" class="hidden">
-                  <label
-                    >你的个人 QQ 号<input
-                      id="napcat-owner"
-                      required
-                      inputmode="numeric"
-                      pattern="[0-9]{5,12}"
-                      maxlength="12"
-                      autocomplete="off"
-                      placeholder="平时用来和小鱼聊天的账号"
-                  /></label>
-                  <p class="footnote">
-                    这个账号的私聊会和桌面共用记忆。连接时会为 ChatDS
-                    准备本机消息接口，之后随应用自动连接。
-                  </p>
-                  <button id="napcat-finish" type="submit" class="primary">连接这个 QQ</button>
-                </form>
+                <p class="footnote">
+                  首次扫码后，小鱼可回复这个 QQ
+                  已有好友的私聊。群聊和共享桌面记忆的主号可在连接后设置。
+                </p>
                 <div class="row">
                   <button type="button" id="napcat-renew" class="hidden">刷新二维码</button>
                   <button type="button" id="napcat-retry" class="hidden">重试</button>
@@ -222,8 +219,20 @@
             <div id="qq-management" class="hidden">
               <article class="card padded">
                 <h2>谁可以和小鱼聊天</h2>
-                <p class="muted">默认只接收你的主号私聊。</p>
+                <form id="qq-owner-form">
+                  <label
+                    >共享桌面记忆的主号（可选）<input
+                      id="qq-owner-manage"
+                      inputmode="numeric"
+                      maxlength="12"
+                      pattern="[0-9]{5,12}"
+                  /></label>
+                  <button type="submit">保存主号</button>
+                </form>
                 <form id="qq-access">
+                  <label class="check"
+                    ><input type="checkbox" id="qq-friend-chats" />允许此号已有的好友私聊</label
+                  >
                   <label
                     >其他允许私聊的 QQ 号<input id="qq-users" placeholder="多个号码用逗号分隔"
                   /></label>

@@ -12,7 +12,7 @@ const maxResponse = 1024 * 1024;
 class Unauthorized extends Error {}
 
 // Let the OS choose a free loopback port. NapCat takes over the listener after SetConfig.
-async function availablePort(): Promise<number> {
+export async function availablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.once('error', reject);

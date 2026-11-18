@@ -10,9 +10,16 @@ function validToken(token: unknown): token is string {
   return typeof token === 'string' && token.trim().length > 0 && token.length <= 1024;
 }
 
-// Only these two known config paths are inspected after a user selects a directory.
+export function webUIFiles(directory: string): string[] {
+  return [
+    join(directory, 'config', 'webui.json'),
+    join(directory, 'webui.json'),
+    join(directory, 'napcat', 'config', 'webui.json'),
+  ];
+}
+
 export async function locationFromFolder(directory: string): Promise<NapCatLocation> {
-  for (const filename of [join(directory, 'config', 'webui.json'), join(directory, 'webui.json')]) {
+  for (const filename of webUIFiles(directory)) {
     const file = await open(filename, 'r').catch((error) => {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined;
       throw new Error('无法读取 NapCat 配置，请检查目录的读取权限。');

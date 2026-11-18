@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,7 +15,7 @@ import WebSocket from 'ws';
 export async function openDesktop(
   profileDir,
   entry = resolve('dist/desktop/main.js'),
-  { blockQzone = false } = {},
+  { blockQzone = false, captureNapcatLaunch = false } = {},
 ) {
   const profile = await realpath(profileDir);
   assert.equal(dirname(profile), await realpath(tmpdir()));
@@ -35,11 +35,42 @@ export async function openDesktop(
       'const picker = ' + JSON.stringify(selection) + ';',
       'dialog.showOpenDialog = async (_, options) => {',
       '  if (!fs.existsSync(picker)) return {canceled:true, filePaths:[]};',
-      "  const {title, path} = JSON.parse(fs.readFileSync(picker, 'utf8'));",
-      "  if (title !== options.title || !options.properties?.includes('openDirectory')) throw new Error('Unexpected directory dialog');",
+      "  const {title, path, kind} = JSON.parse(fs.readFileSync(picker, 'utf8'));",
+      "  if (title !== options.title || !options.properties?.includes(kind)) throw new Error('Unexpected file picker');",
       '  fs.unlinkSync(picker);',
       '  return {canceled:false, filePaths:[path]};',
       '};',
+      ...(captureNapcatLaunch
+        ? [
+            "const childProcess = require('node:child_process');",
+            "const paths = require('node:path');",
+            'const spawnNormally = childProcess.spawn;',
+            'childProcess.spawn = (command, args, options) => {',
+            '  const cwd = options?.cwd;',
+            "  const managedRoot = paths.join(__dirname, 'ChatDS', 'napcat-packages');",
+            "  if (cwd && paths.basename(command).toLowerCase() === 'cmd.exe') {",
+            '    const rel = paths.relative(managedRoot, cwd);',
+            "    if (rel && !rel.startsWith('..') && !paths.isAbsolute(rel)) {",
+            '      const script = paths.basename(args.at(-1));',
+            "      if (!['launcher-user.bat', 'launcher-win10-user.bat'].includes(script)) throw new Error('Unexpected managed launcher');",
+            "      fs.appendFileSync(paths.join(__dirname,'journey-napcat-launch.jsonl'), JSON.stringify({cwd,script}) + '\\n');",
+            "      const child = new (require('node:events').EventEmitter)();",
+            "      child.unref = () => {}; setImmediate(() => {child.emit('spawn'); child.emit('exit', 0);});",
+            '      return child;',
+            '    }',
+            '  }',
+            '  return spawnNormally(command, args, options);',
+            '};',
+            "const net = require('node:net');",
+            'const connectNormally = net.Socket.prototype.connect;',
+            'net.Socket.prototype.connect = function(...args) {',
+            '  const option = Array.isArray(args[0]) ? args[0][0] : args[0];',
+            "  if (Number(option?.port ?? option) === 6099) throw new Error('Existing local WebUI excluded from managed install test');",
+            '  return connectNormally.apply(this, args);',
+            '};',
+            "require('node:module').syncBuiltinESMExports();",
+          ]
+        : []),
       ...(blockQzone
         ? [
             'const fetchNormally = globalThis.fetch;',
@@ -171,6 +202,17 @@ export async function openDesktop(
       if (Date.now() >= end) throw new Error('Desktop renderer did not finish navigation');
       await delay(75);
     }
+    async function chooseNext(path, title, kind) {
+      const chosen = await realpath(path);
+      const rel = relative(profile, chosen);
+      assert.ok(
+        rel && !rel.startsWith('..') && !isAbsolute(rel),
+        'Expected a fixture inside the isolated profile',
+      );
+      const item = await stat(chosen);
+      assert.ok(kind === 'openFile' ? item.isFile() : item.isDirectory());
+      await writeFile(selection, JSON.stringify({ path: chosen, title, kind }), { flag: 'wx' });
+    }
     return {
       async evaluate(fn, ...args) {
         const packet = await rpc('Runtime.evaluate', {
@@ -199,13 +241,10 @@ export async function openDesktop(
         await rpc('Input.insertText', { text });
       },
       async chooseNextFolder(path, title) {
-        const chosen = await realpath(path);
-        const rel = relative(profile, chosen);
-        assert.ok(
-          rel && !rel.startsWith('..') && !isAbsolute(rel),
-          'Expected a fixture inside the isolated profile',
-        );
-        await writeFile(selection, JSON.stringify({ path: chosen, title }), { flag: 'wx' });
+        await chooseNext(path, title, 'openDirectory');
+      },
+      async chooseNextFile(path, title) {
+        await chooseNext(path, title, 'openFile');
       },
       close,
     };

@@ -128,6 +128,16 @@ async function configure() {
     () =>
       desktop.evaluate(
         () =>
+          !!document.querySelector('#page-connections')?.getClientRects().length &&
+          !!document.querySelector('#qq-desktop-only')?.getClientRects().length,
+      ),
+    'Fresh desktop QQ setup unavailable',
+  );
+  await click('qq-desktop-only');
+  await wait(
+    () =>
+      desktop.evaluate(
+        () =>
           document.getElementById('model-form')?.getClientRects().length > 0 &&
           !document.getElementById('model-fields').disabled,
       ),

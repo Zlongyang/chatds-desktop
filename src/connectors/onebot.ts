@@ -32,7 +32,7 @@ export class OneBot extends EventEmitter {
   start(): void {
     if (!this.stopped) return;
     const c = this.config();
-    if (!c.botQQ || !c.ownerQQ) throw new Error('请先设置机器人账号和主号');
+    if (!c.botQQ) throw new Error('请先登录 QQ');
     if (!validateOneBotUrl(c.url)) throw new Error('OneBot 地址无效');
     if (!this.token()) throw new Error('请先设置 OneBot Access Token');
     this.stopped = false;
@@ -196,7 +196,9 @@ export class OneBot extends EventEmitter {
     if (
       isGroup
         ? !/^\d{5,12}$/.test(group) || !c.groups.includes(group)
-        : user !== c.ownerQQ && !c.users.includes(user)
+        : user !== c.ownerQQ &&
+          !c.users.includes(user) &&
+          !(c.friendChats && raw.sub_type === 'friend')
     )
       return null;
     const segments = Array.isArray(raw.message)
