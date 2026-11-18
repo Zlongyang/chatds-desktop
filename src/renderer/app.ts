@@ -1,6 +1,12 @@
 import { renderConnections, leaveConnections, hasQQChannel } from './connections.js';
 import { renderNapcatSettings } from './napcat-settings.js';
-import { activePersonaName } from '../shared/persona.js';
+import {
+  activePersonaCard,
+  activePersonaName,
+  personaLibrary,
+  resolveCardWriting,
+} from '../shared/persona.js';
+import { tavernContextEditor } from './tavern-context.js';
 import { personaEditor } from './persona-editor.js';
 import type {
   AppSnapshot,
@@ -94,6 +100,8 @@ let historyCursors: number[] = [];
 let olderCursor: number | undefined;
 let desktopDraft = '';
 const renderPersona = personaEditor(api, toast);
+const contextEditor = tavernContextEditor(api, toast);
+let personaChoicesVersion = '';
 let memoryRows: MemoryFact[] = [],
   refreshTimer: ReturnType<typeof setTimeout> | undefined,
   noticeTimer: ReturnType<typeof setTimeout> | undefined,
@@ -225,8 +233,7 @@ function render() {
     : '配置聊天模型';
   $('#model-badge').classList.toggle('hidden', page === 'settings');
   $('#pause').classList.toggle('hidden', !modelReady(s) && s.config.enabled);
-  $('#setup-persona-status').textContent =
-    '正在使用「' + activePersonaName(s.config) + '」角色卡。';
+  $('#setup-persona-status').textContent = '默认角色是「' + activePersonaName(s.config) + '」。';
   const qqStatus =
     !hasQQ && s.connection === 'online' ? '账号未核对' : (statuses[s.connection] ?? s.connection);
   $('#setup-qq-status').textContent = hasQQ
@@ -268,6 +275,7 @@ function render() {
     formsLoaded = true;
   }
   renderPersona(s.config);
+  contextEditor.render(s.config, roomId, s.rooms);
   renderModelSettings();
   $('#qq-token-status').textContent = s.onebotTokenConfigured
     ? '已保存令牌；留空保留。'
@@ -353,6 +361,21 @@ function renderChat() {
       ? '此会话只同步消息'
       : (room?.error ?? (waiting ? '等待你的确认' : phases[room?.phase ?? 'idle']!));
   select('#mode').value = settings.mode;
+  const character = activePersonaCard(s.config, roomId);
+  const library = personaLibrary(s.config);
+  const personaSelect = select('#room-persona');
+  const choicesVersion = JSON.stringify([
+    library.active,
+    library.cards.map(({ id, name, avatar }) => [id, name, avatar]),
+  ]);
+  if (choicesVersion !== personaChoicesVersion) {
+    personaChoicesVersion = choicesVersion;
+    personaSelect.replaceChildren(
+      new Option('默认 · ' + activePersonaName(s.config), ''),
+      ...library.cards.map((c) => new Option([c.avatar, c.name].filter(Boolean).join(' '), c.id)),
+    );
+  }
+  personaSelect.value = settings.personaId || '';
   $('#chat-web-settings').classList.toggle(
     'hidden',
     !local || !modelReady(s) || settings.mode !== 'assistant',
@@ -374,7 +397,7 @@ function renderChat() {
     ? '在 QQ 中发消息，这里同步显示记录'
     : needsSetup
       ? '连接一个模型后，就可以开始聊天。'
-      : '跟' + activePersonaName(state!.config) + '说句话…';
+      : '跟' + activePersonaName(s.config, roomId) + '说句话…';
   $('#chat-hint').textContent = !local
     ? '请在 QQ 中回复。'
     : needsSetup
@@ -383,7 +406,14 @@ function renderChat() {
         ? '点击右上角「恢复回复」继续聊天'
         : 'Enter 发送，Shift + Enter 换行';
   $('#stop').toggleAttribute('disabled', !room || room.phase === 'idle');
-  const signature = roomId + ':' + (room?.updatedAt ?? 0);
+  const signature = [
+    roomId,
+    room?.updatedAt ?? 0,
+    character?.id,
+    character?.greeting,
+    character?.name,
+    character?.portrait?.slice(-32),
+  ].join(':');
   if (signature !== historyVersion) {
     const first = !historyVersion;
     historyVersion = signature;
@@ -416,13 +446,25 @@ async function loadHistory(key: string, pageChanged = false, cursors = historyCu
     if (!messages.length) {
       const empty = el('div', 'empty');
       const img = document.createElement('img');
-      img.src = '../assets/icon.png';
+      const card = state && activePersonaCard(state.config, key);
+      img.alt = '';
+      const desktopCard = key === 'desktop:owner' ? card : undefined;
+      img.src = desktopCard?.portrait
+        ? 'data:image/png;base64,' + desktopCard.portrait
+        : '../assets/icon.png';
       img.width = 76;
       img.height = 76;
+      const greeting = key === 'desktop:owner' && card?.greeting?.trim();
       empty.append(
-        img,
-        el('h2', '', '今天过得怎么样？'),
-        el('p', '', '普通的小事，也可以聊一聊。'),
+        desktopCard?.avatar && !desktopCard.portrait
+          ? el('span', 'greeting-avatar', desktopCard.avatar)
+          : img,
+        el('h2', '', greeting ? card!.name : '今天过得怎么样？'),
+        el(
+          'p',
+          greeting ? 'card-greeting' : '',
+          greeting ? resolveCardWriting(greeting, card!.name) : '普通的小事，也可以聊一聊。',
+        ),
       );
       box.append(empty);
     } else for (const message of messages) box.append(messageNode(message));
@@ -460,10 +502,21 @@ function messageNode(message: ChatMessage) {
         message.status === 'unknown' ? 'QQ 发送结果未知，请核实；没有自动重发。' : '未发送成功。',
       ),
     );
-  row.append(
-    el('span', 'avatar', message.role === 'assistant' ? '鱼' : message.name.slice(0, 1)),
-    body,
-  );
+  const avatar = el('span', 'avatar', [...message.name][0] ?? '');
+  if (message.role === 'assistant') {
+    const matching = state?.config.personaLibrary?.cards.filter(
+      (card) => card.name === message.name,
+    );
+    const card = matching?.length === 1 ? matching[0] : undefined;
+    if (card?.portrait) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = 'data:image/png;base64,' + card.portrait;
+      avatar.replaceChildren(img);
+    } else
+      avatar.textContent = card?.avatar || (message.name === '小鱼' ? '鱼' : avatar.textContent);
+  }
+  row.append(avatar, body);
   return row;
 }
 function renderActivities() {
@@ -676,6 +729,8 @@ $('#message').onkeydown = (event) => {
 $('#stop').onclick = () => act(() => api.stop(roomId));
 $('#pause').onclick = () =>
   act(() => api.configure({ config: { enabled: !state!.config.enabled } }));
+select('#room-persona').onchange = () =>
+  act(() => api.conversation(roomId, { personaId: select('#room-persona').value || null }));
 select('#mode').onchange = () =>
   act(() =>
     api.conversation(roomId, { mode: select('#mode').value as ConversationSettings['mode'] }),

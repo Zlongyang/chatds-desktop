@@ -57,3 +57,9 @@ system prompt 按固定规则、程序能力、风格资料、技能目录、检
 前台默认并发 2、每会话 pending 20、全局 pending 200、活动 actor 128。模型运行、审批、OneBot RPC 与容器都有期限；RPC 关闭和 abort 会清理等待表与监听。配置、密钥与数据库由各自单一所有者写入。运行日志有有界排队和轮转。
 
 QQ 发件箱先记录 pending，断线未确认标为 unknown，重启不重放。迁移只由桌面显式发起，哈希匹配、先备份再事务导入。构建产物排除测试、数据库、凭据、旧版目录和账号缓存。GitHub CI 验证核心与 Windows 打包，单独 Linux Docker job 执行真实隔离测试。
+
+## 酒馆角色卡
+
+产品设计参考了 DSH Tavern 的固定版本 `b495df2b79c325eb4d9401baffee17484d702e49`。前端把角色库编辑与当前会话的角色选择放在两个入口，后端按会话解析角色设定、示例、用户身份和世界书。ChatDS 将这些字段作为模型可读的资料，角色导入使用字段白名单，权限仍由宿主在每次工具调用时检查。[上游编辑器](https://github.com/2380557712/dsh-tavern/blob/b495df2b79c325eb4d9401baffee17484d702e49/packages/client-ui-tavern-toolkit/src/client/TavernPanel.tsx) · [会话切换](https://github.com/2380557712/dsh-tavern/blob/b495df2b79c325eb4d9401baffee17484d702e49/packages/client-ui-tavern-toolkit/src/client/CharacterSwitch.tsx) · [提示词与会话持久化](https://github.com/2380557712/dsh-tavern/blob/b495df2b79c325eb4d9401baffee17484d702e49/packages/tavern-toolkit/src/index.ts)
+
+适配前用原版 React 控件、服务和项目自带的「艾米」卡做了隔离试验。DSH 把角色数据写进 PNG 的 `ch`，SillyTavern 读取 `chara` 或 `ccv3`。ChatDS 的 PNG 导出兼容两种读法。可在源码构建后运行 `node scripts/test-tavern-reference.mjs <上述提交的检出目录>`，用原版编解码器核对样例角色字段。[DSH 编解码器](https://github.com/2380557712/dsh-tavern/blob/b495df2b79c325eb4d9401baffee17484d702e49/packages/tavern-toolkit/src/cards.ts) · [SillyTavern 的 PNG 读取实现](https://github.com/SillyTavern/SillyTavern/blob/06bde939fb1e9c4c8d8641d810f0a916b5bce127/src/character-card-parser.js)

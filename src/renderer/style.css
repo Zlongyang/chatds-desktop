@@ -481,6 +481,33 @@ input[type='checkbox'] {
   font-size: 14px;
   margin-bottom: 0;
 }
+.conversation-bar .row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+#room-persona {
+  max-width: 160px;
+  text-overflow: ellipsis;
+}
+.greeting-avatar {
+  font-size: 48px;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+.message .avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+.empty .card-greeting {
+  max-width: 44ch;
+  max-height: 55%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: inherit;
+}
 .conversation-bar select {
   font-size: 11px;
   margin: 0;
@@ -715,27 +742,285 @@ input[type='checkbox'] {
   padding: 4px 7px;
   border-radius: 5px;
 }
-#persona-form textarea {
+.persona-workspace {
+  display: grid;
+  grid-template-columns: clamp(210px, 23%, 280px) minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+.persona-library {
+  padding: 17px 12px 12px;
+}
+.persona-library-head,
+.persona-library-tools,
+.persona-heading,
+.persona-tabs,
+.persona-savebar,
+.persona-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.persona-library-head {
+  justify-content: space-between;
+  padding: 0 6px;
+}
+.persona-library-head h2,
+.persona-heading h2 {
+  margin: 0;
+}
+.persona-library-head small,
+.persona-heading-copy span,
+#persona-status {
+  color: #62797e;
+}
+.persona-library-tools {
+  margin: 15px 4px;
+}
+.persona-library-tools button {
+  padding: 7px 8px;
+  flex: 1;
+  font-size: 12px;
+}
+#persona-list {
+  display: grid;
+  gap: 4px;
+}
+#persona-context-link {
+  width: 100%;
+  margin-top: 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: 12px 6px 3px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  background: transparent;
+  color: #426775;
+}
+#persona-context-link:hover {
+  color: #215365;
+}
+.persona-workspace ~ #tavern-context {
+  margin-top: 18px;
+}
+.persona-choice {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  width: 100%;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+}
+.persona-choice:hover {
+  background: #f3f7f6;
+}
+.persona-choice[aria-pressed='true'] {
+  border-color: #bfd8d9;
+  background: #edf5f4;
+}
+.persona-choice-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.persona-choice strong,
+.persona-choice small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.persona-choice strong {
+  font-size: 13px;
+}
+.persona-choice small {
+  color: #62797e;
+}
+.persona-avatar {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #deebeb;
+  color: #396876;
+  border-radius: 11px;
+  font-size: 17px;
+}
+.persona-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.persona-detail {
+  min-width: 0;
+}
+.persona-heading {
+  gap: 12px;
+  padding: 19px 24px;
+}
+.persona-heading .persona-avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 22px;
+}
+.persona-heading-copy {
+  min-width: 0;
+  flex: 1;
+}
+.persona-heading-copy h2 {
+  font-size: 19px;
+  overflow-wrap: anywhere;
+}
+.persona-heading-copy span {
+  font-size: 12px;
+}
+#apply-persona {
+  font-size: 12px;
+  padding: 7px 10px;
+}
+.persona-tabs {
+  padding: 0 24px;
+  gap: 21px;
+  border-bottom: 1px solid var(--line);
+}
+.persona-tabs button {
+  font-size: 13px;
+  padding: 9px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #657a80;
+}
+.persona-tabs button[aria-pressed='true'] {
+  color: #276b7d;
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.persona-tabs button:hover {
+  color: #245b69;
+}
+.persona-fields {
+  padding: 15px 24px 18px;
+}
+.persona-identity {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(100px, 1fr);
+  gap: 14px;
+}
+.persona-fields label {
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+.persona-fields label:last-child {
+  margin-bottom: 0;
+}
+.persona-fields input,
+.persona-fields textarea {
+  font-weight: normal;
+  padding: 8px 11px;
+}
+.persona-fields textarea {
   line-height: 1.6;
   resize: vertical;
 }
-.persona-preview {
-  color: var(--muted);
-  margin: 18px 0;
+.persona-fields h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
 }
-.persona-preview summary {
-  cursor: pointer;
-}
-.persona-preview pre {
+#persona-preview {
+  margin: 0;
+  padding: 16px;
+  background: #f3f7f6;
+  border-radius: 8px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: var(--soft);
-  padding: 14px;
-  border-radius: 8px;
   font: inherit;
+  line-height: 1.8;
 }
-.persona-actions {
+.persona-savebar {
+  padding: 13px 24px;
   flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+}
+#persona-status {
+  margin-right: auto;
+}
+.persona-savebar button {
+  font-size: 13px;
+  padding: 7px 12px;
+}
+.persona-file-actions {
+  padding: 8px 18px;
+  border-top: 1px solid var(--line);
+}
+.persona-file-actions button {
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  padding: 6px;
+}
+.persona-file-actions button:hover {
+  background: var(--soft);
+}
+#delete-persona {
+  color: #99554c;
+  margin-left: auto;
+}
+#persona-confirm {
+  width: min(360px, 92vw);
+  padding: 23px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: inherit;
+  box-shadow: 0 16px 56px #233a4333;
+}
+#persona-confirm h2 {
+  overflow-wrap: anywhere;
+  margin-bottom: 20px;
+}
+#persona-confirm::backdrop {
+  background: #1e333d45;
+}
+#persona-confirm-action {
+  background: #95544a;
+  color: white;
+  border-color: transparent;
+}
+@media (max-width: 990px) {
+  .persona-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .persona-library {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    padding: 12px;
+  }
+  .persona-library-head {
+    justify-content: flex-start;
+  }
+  .persona-library-tools {
+    margin: 0;
+  }
+  .persona-library-tools button {
+    flex: auto;
+  }
+  #persona-list {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  }
+  #persona-context-link {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding-top: 8px;
+  }
 }
 .tool-row {
   display: flex;

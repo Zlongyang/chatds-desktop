@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AppConfig, ConversationSettings, ModelProfile, ToolId } from './types.js';
 import { DEFAULT_PERSONA, MAX_PERSONA_CARDS, MAX_PERSONA_TEXT, personaText } from './persona.js';
+import { pruneTavernSelections, tavernContextSchema } from './tavern-context.js';
 export { DEFAULT_PERSONA } from './persona.js';
 
 export const TOOL_INFO: Record<ToolId, { description: string; approval: boolean }> = {
@@ -65,9 +66,41 @@ export function validateOneBotUrl(value: string): boolean {
     return false;
   }
 }
+const cardId = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
 export const conversationSchema = z
-  .object({ mode: z.enum(['companion', 'assistant']), ambient: z.boolean(), muted: z.boolean() })
+  .object({
+    mode: z.enum(['companion', 'assistant']),
+    ambient: z.boolean(),
+    muted: z.boolean(),
+    personaId: cardId.nullable().optional(),
+    userPersonaId: cardId.nullable().optional(),
+    worldEntryIds: z.array(cardId).max(64).optional(),
+  })
   .strict();
+const writing = z.string().trim().max(MAX_PERSONA_TEXT);
+export const personaCardSchema = z
+  .object({
+    id: cardId,
+    name: z.string().trim().min(1).max(80),
+    description: writing,
+    personality: writing,
+    examples: writing,
+    scenario: writing.optional(),
+    greeting: writing.optional(),
+    creator: z.string().trim().max(160).optional(),
+    avatar: z.string().trim().max(16).optional(),
+    portrait: z
+      .string()
+      .max(43692)
+      .regex(/^iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/)
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (c) => !!(c.description || c.personality || c.examples || c.scenario || c.greeting),
+    '请填写至少一项角色资料',
+  )
+  .refine((c) => personaText(c).length <= MAX_PERSONA_TEXT, '角色资料最多 20000 字符');
 export const configSchema = z
   .object({
     version: z.literal(1),
@@ -77,25 +110,7 @@ export const configSchema = z
     personaLibrary: z
       .object({
         active: z.string().max(64),
-        cards: z
-          .array(
-            z
-              .object({
-                id: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-                name: z.string().trim().min(1).max(80),
-                description: z.string().trim().max(MAX_PERSONA_TEXT),
-                personality: z.string().trim().max(MAX_PERSONA_TEXT),
-                examples: z.string().trim().max(MAX_PERSONA_TEXT),
-              })
-              .strict()
-              .refine(
-                (c) => !!(c.description || c.personality || c.examples),
-                '请填写角色介绍、说话方式或对话示例',
-              )
-              .refine((c) => personaText(c).length <= MAX_PERSONA_TEXT, '角色资料最多 20000 字符'),
-          )
-          .min(1)
-          .max(MAX_PERSONA_CARDS),
+        cards: z.array(personaCardSchema).min(1).max(MAX_PERSONA_CARDS),
       })
       .strict()
       .refine(
@@ -105,6 +120,7 @@ export const configSchema = z
         '使用中的角色卡无效',
       )
       .optional(),
+    tavernContext: tavernContextSchema.optional(),
     model: modelSchema,
     onebot: z
       .object({
@@ -158,6 +174,7 @@ export const configSchema = z
   })
   .strict()
   .transform((config) => {
+    pruneTavernSelections(config);
     const library = config.personaLibrary;
     if (library)
       config.persona = personaText(library.cards.find((card) => card.id === library.active)!);

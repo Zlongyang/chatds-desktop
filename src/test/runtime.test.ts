@@ -29,6 +29,47 @@ test('three consecutive messages become one model request and one reply', async 
   assert.equal(store.history('desktop:owner').filter((m) => m.role === 'assistant').length, 1);
   assert.equal(host.runs.size, 0);
 });
+test('model prompts and stored reply authors resolve each conversation’s character', async (t) => {
+  const { host, core, send, store } = fixture(t);
+  const group = 'onebot:group:30003';
+  const first = {
+    id: 'garden',
+    name: '园丁',
+    description: 'GARDEN_ROOM_ONLY',
+    personality: '',
+    examples: '',
+  };
+  const second = { ...first, id: 'river', name: '船长', description: 'RIVER_ROOM_ONLY' };
+  host.config.personaLibrary = { active: first.id, cards: [first, second] };
+  host.config.conversations[group] = {
+    mode: 'companion',
+    ambient: false,
+    muted: false,
+    personaId: second.id,
+  };
+  core.configure(host.config);
+  send('早上好');
+  await core.idle();
+  send('你好', {
+    conversationId: group,
+    actorId: 'qq:20002',
+    channel: 'onebot',
+    isGroup: true,
+    mention: true,
+  });
+  await core.idle();
+  const prompts = host.requests.map((r) =>
+    JSON.stringify(r.messages.filter((m) => m.role === 'system')),
+  );
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[0]!, /GARDEN_ROOM_ONLY/);
+  assert.doesNotMatch(prompts[0]!, /RIVER_ROOM_ONLY/);
+  assert.match(prompts[1]!, /RIVER_ROOM_ONLY/);
+  assert.doesNotMatch(prompts[1]!, /GARDEN_ROOM_ONLY/);
+  assert.equal(store.history('desktop:owner').at(-1)?.name, '园丁');
+  assert.equal(store.history(group).at(-1)?.name, '船长');
+});
+
 test('a correction arriving during generation cancels stale text and retains original plus new messages', async (t) => {
   const { host, core, store, send } = fixture(t);
   host.steps.push(

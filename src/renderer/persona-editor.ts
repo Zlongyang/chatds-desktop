@@ -1,172 +1,271 @@
 import {
-  importPersonaJson,
   MAX_PERSONA_CARDS,
   MAX_PERSONA_TEXT,
   personaLibrary,
   personaText,
 } from '../shared/persona.js';
-import type { AppConfig, PersonaCard, ChatDSApi } from '../shared/types.js';
+import type { AppConfig, ChatDSApi, PersonaCard } from '../shared/types.js';
 
 export function personaEditor(api: ChatDSApi, notify: (message: string, error?: boolean) => void) {
   const panel = document.getElementById('page-persona')!;
-  const form = panel.querySelector<HTMLFormElement>('#persona-form')!;
-  const list = panel.querySelector<HTMLSelectElement>('#persona-list')!;
-  const file = panel.querySelector<HTMLInputElement>('#persona-file')!;
-  const name = panel.querySelector<HTMLInputElement>('#persona-name')!;
-  const description = panel.querySelector<HTMLTextAreaElement>('#persona')!;
-  const style = panel.querySelector<HTMLTextAreaElement>('#persona-style')!;
-  const examples = panel.querySelector<HTMLTextAreaElement>('#persona-examples')!;
-  const save = panel.querySelector<HTMLButtonElement>('#save-persona')!;
-  const revert = panel.querySelector<HTMLButtonElement>('#revert-persona')!;
-  const remove = panel.querySelector<HTMLButtonElement>('#delete-persona')!;
-  let library: ReturnType<typeof personaLibrary>,
-    draft: PersonaCard,
-    revision = 0;
-  let savedSignature = '';
+  const find = <T extends HTMLElement = HTMLElement>(selector: string) =>
+    panel.querySelector<T>(selector)!;
+  const button = (id: string) => find<HTMLButtonElement>(id);
+  const fields = {
+    name: find<HTMLInputElement>('#persona-name'),
+    avatar: find<HTMLInputElement>('#persona-avatar'),
+    creator: find<HTMLInputElement>('#persona-creator'),
+    description: find<HTMLTextAreaElement>('#persona'),
+    personality: find<HTMLTextAreaElement>('#persona-style'),
+    scenario: find<HTMLTextAreaElement>('#persona-scenario'),
+    greeting: find<HTMLTextAreaElement>('#persona-greeting'),
+    examples: find<HTMLTextAreaElement>('#persona-examples'),
+  };
+  const fieldNames = Object.keys(fields) as (keyof typeof fields)[];
+  const form = find<HTMLFormElement>('#persona-form');
+  const workspace = find('.persona-workspace');
+  const confirm = find<HTMLDialogElement>('#persona-confirm');
+  const list = find('#persona-list');
+  button('#persona-context-link').onclick = () => {
+    const context = find('#tavern-context');
+    context.scrollIntoView({ block: 'start' });
+    context.querySelector('select')?.focus({ preventScroll: true });
+  };
+  const apply = button('#apply-persona'),
+    save = button('#save-persona');
+  const remove = button('#delete-persona'),
+    revert = button('#revert-persona');
+  const add = button('#new-persona'),
+    load = button('#import-persona');
+  const exports = { json: button('#export-persona-json'), png: button('#export-persona-png') };
+  let library: NonNullable<AppConfig['personaLibrary']>;
+  let selected: PersonaCard;
+  let revision = 0,
+    signature = '';
 
   function read(): PersonaCard {
-    return {
-      id: draft.id,
-      name: name.value,
-      description: description.value,
-      personality: style.value,
-      examples: examples.value,
-    };
+    const card = { ...selected };
+    for (const key of fieldNames) card[key] = fields[key].value;
+    return card;
   }
-  function dirty() {
-    return JSON.stringify(read()) !== JSON.stringify(draft);
+  function changed() {
+    return fieldNames.some((key) => fields[key].value !== (selected[key] || ''));
   }
-  function isDraft() {
-    return !library.cards.some((card) => card.id === draft.id);
+  function saved(id: string) {
+    return library.cards.find((card) => card.id === id);
+  }
+  function avatar(host: HTMLElement, card: PersonaCard) {
+    // Only sanitized, locally stored PNG previews may become an image source.
+    if (
+      card.portrait &&
+      card.portrait.length <= 43700 &&
+      /^iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(card.portrait)
+    ) {
+      const src = 'data:image/png;base64,' + card.portrait;
+      if (host.firstElementChild?.getAttribute('src') === src) return;
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = src;
+      host.replaceChildren(img);
+    } else {
+      host.textContent =
+        card.avatar?.trim() ||
+        (card.id === 'original' ? '🐟' : Array.from(card.name.trim())[0]) ||
+        '＋';
+    }
+  }
+  function renderList() {
+    const choices = saved(selected.id) ? library.cards : [...library.cards, selected];
+    find('#persona-count').textContent = library.cards.length + ' 张';
+    list.replaceChildren(
+      ...choices.map((card) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'persona-choice';
+        row.dataset.personaId = card.id;
+        row.setAttribute('aria-pressed', String(card.id === selected.id));
+        const icon = document.createElement('span');
+        icon.className = 'persona-avatar';
+        icon.setAttribute('aria-hidden', 'true');
+        avatar(icon, card);
+        const copy = document.createElement('span');
+        copy.className = 'persona-choice-copy';
+        const title = document.createElement('strong');
+        title.textContent = card.name || '新角色卡';
+        const caption = document.createElement('small');
+        caption.textContent =
+          card.id === library.active
+            ? '默认角色'
+            : !saved(card.id)
+              ? '未保存'
+              : card.creator?.trim() || card.description.trim() || '已保存';
+        copy.append(title, caption);
+        row.append(icon, copy);
+        row.onclick = async () => {
+          if (card.id !== selected.id && (await canLeave())) {
+            edit(card);
+            list
+              .querySelector<HTMLButtonElement>('[aria-pressed="true"]')
+              ?.focus({ preventScroll: true });
+          }
+        };
+        return row;
+      }),
+    );
+    add.disabled = load.disabled = library.cards.length >= MAX_PERSONA_CARDS;
+    const hint = add.disabled ? '角色卡已达 ' + MAX_PERSONA_CARDS + ' 张，请先删除一张。' : '';
+    add.title = hint;
+    load.title = hint || '选择酒馆 JSON 或 PNG 角色卡';
   }
   function update() {
     const card = read();
     const prompt = personaText(card);
-    const active = library.active === card.id;
-    const changed = dirty();
-    const newCard = isDraft();
-    const valid =
-      card.name.trim() &&
-      (card.description.trim() || card.personality.trim() || card.examples.trim()) &&
-      prompt.length <= MAX_PERSONA_TEXT;
-    panel.querySelector('#persona-preview')!.textContent = prompt;
-    panel.querySelector('#persona-status')!.textContent =
-      prompt.length > MAX_PERSONA_TEXT
-        ? '资料超过 20000 字符，请精简后保存。'
-        : !valid
-          ? '请填写角色名字，以及至少一项角色资料。'
-          : changed || newCard
-            ? '草稿 · 保存后用于桌面和 QQ 的后续回复'
-            : active
-              ? '桌面和 QQ 正在使用'
-              : '使用后从下一次模型请求生效';
-    save.textContent = active ? '保存修改' : newCard || changed ? '保存并使用' : '使用这张卡';
-    save.disabled = !valid || (active && !changed);
-    remove.hidden = active || newCard;
-    revert.hidden = !(changed || newCard);
-    revert.textContent = newCard ? '取消新建' : '撤销编辑';
+    const isNew = !saved(card.id),
+      dirty = changed(),
+      isDefault = card.id === library.active;
+    const hasWriting = [
+      card.description,
+      card.personality,
+      card.examples,
+      card.scenario,
+      card.greeting,
+    ].some((value) => value?.trim());
+    const invalid = !card.name.trim()
+      ? '请填写角色名字。'
+      : !hasWriting
+        ? '请至少填写一项角色资料或对话内容。'
+        : prompt.length > MAX_PERSONA_TEXT
+          ? '角色资料超过 20000 字符，请精简后保存。'
+          : '';
+    const title = card.name.trim() || '新角色卡';
+    find('#persona-title').textContent = title;
+    if (isNew) {
+      const row = list.querySelector<HTMLElement>('[aria-pressed="true"]')!;
+      row.querySelector('strong')!.textContent = title;
+      avatar(row.querySelector('.persona-avatar')!, card);
+    }
+    avatar(find('#persona-avatar-preview'), card);
+    find('#persona-role').textContent = isNew ? '草稿' : isDefault ? '默认角色' : '库中角色';
+    find('#persona-preview').textContent = prompt || '填写角色资料后可在这里预览。';
+    find('#persona-status').textContent =
+      invalid || (isNew ? '保存后加入卡库' : dirty ? '有未保存的修改' : '已保存');
+    save.disabled = Boolean(invalid) || (!dirty && !isNew);
+    for (const exportButton of Object.values(exports)) exportButton.disabled = Boolean(invalid);
+    apply.hidden = isDefault;
+    apply.disabled = isNew || dirty;
+    apply.title = apply.disabled ? '请先保存角色卡。' : '用于跟随默认角色的对话';
+    revert.hidden = !isNew && !dirty;
+    revert.textContent = isNew ? '取消草稿' : '撤销修改';
+    remove.hidden = isNew;
+    remove.disabled = isDefault;
+    remove.title = isDefault ? '请先将另一张角色卡设为默认。' : '';
   }
-  function edit(card: PersonaCard) {
-    draft = card;
-    const choices = library.cards.map(
-      (c) => new Option(c.name + (c.id === library.active ? ' · 使用中' : ''), c.id),
-    );
-    if (isDraft()) choices.push(new Option((card.name || '新角色卡') + ' · 草稿', card.id));
-    list.replaceChildren(...choices);
-    list.value = draft.id;
-    name.value = card.name;
-    description.value = card.description;
-    style.value = card.personality;
-    examples.value = card.examples;
+  function showTab(active: string) {
+    for (const tab of panel.querySelectorAll<HTMLButtonElement>('[data-persona-tab]')) {
+      const selectedTab = tab.dataset.personaTab === active;
+      tab.setAttribute('aria-pressed', String(selectedTab));
+      find('#' + tab.getAttribute('aria-controls')).hidden = !selectedTab;
+    }
+  }
+  function edit(card: PersonaCard, resetTab = true) {
+    selected = card;
+    for (const key of fieldNames) fields[key].value = card[key] || '';
+    if (resetTab) showTab('profile');
+    renderList();
     update();
   }
-  function current() {
-    return library.cards.find((card) => card.id === library.active)!;
+  function ask(question: string, action: string): Promise<boolean> {
+    find('#persona-confirm-title').textContent = question;
+    button('#persona-confirm-action').textContent = action;
+    confirm.returnValue = '';
+    return new Promise((resolve) => {
+      confirm.addEventListener('close', () => resolve(confirm.returnValue === 'confirm'), {
+        once: true,
+      });
+      confirm.showModal();
+    });
   }
   function canLeave() {
     return (
-      !(dirty() || (isDraft() && !!draft.name)) || window.confirm('放弃这张角色卡未保存的修改？')
+      (!changed() && (Boolean(saved(selected.id)) || !selected.name)) ||
+      ask('放弃这张卡未保存的修改？', '放弃修改')
     );
   }
-  function canAdd() {
-    if (library.cards.length < MAX_PERSONA_CARDS) return true;
-    notify('最多保存 ' + MAX_PERSONA_CARDS + ' 张角色卡，请先删除闲置的卡。', true);
-    return false;
-  }
   function render(config: AppConfig) {
-    if (config.revision <= revision) return;
+    if (revision >= config.revision) return;
     revision = config.revision;
     const next = personaLibrary(config);
-    const signature = JSON.stringify(next);
-    if (signature === savedSignature) return;
-    savedSignature = signature;
+    const nextSignature = JSON.stringify(next);
+    if (nextSignature === signature) return;
+    const editing = selected && (!saved(selected.id) || changed());
     library = next;
-    edit(current());
+    signature = nextSignature;
+    if (editing) {
+      renderList();
+      update();
+    } else {
+      edit((selected && saved(selected.id)) || saved(library.active)!, !selected);
+    }
   }
-  async function persist(next: typeof library) {
-    panel.inert = true;
+  async function action(work: () => Promise<void>) {
+    if (workspace.inert) return;
+    workspace.inert = true;
     try {
-      const snapshot = await api.configure({ config: { personaLibrary: next } });
-      render(snapshot.config);
-      edit(current());
-      notify('当前角色：' + current().name);
+      await work();
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error), true);
     } finally {
-      panel.inert = false;
+      workspace.inert = false;
     }
   }
-  list.onchange = () => {
-    if (!canLeave()) {
-      list.value = draft.id;
-      return;
-    }
-    const selected = library.cards.find((card) => card.id === list.value);
-    if (selected) edit(selected);
-  };
-  panel.querySelector<HTMLButtonElement>('#new-persona')!.onclick = () => {
-    if (!canAdd() || !canLeave()) return;
+  async function persist(next: typeof library, selectedId: string) {
+    const result = await api.configure({ config: { personaLibrary: next } });
+    render(result.config);
+    edit(saved(selectedId) || saved(library.active)!, false);
+  }
+  for (const tab of panel.querySelectorAll<HTMLButtonElement>('[data-persona-tab]'))
+    tab.onclick = () => showTab(tab.dataset.personaTab!);
+  add.onclick = async () => {
+    if (!(await canLeave())) return;
     edit({ id: crypto.randomUUID(), name: '', description: '', personality: '', examples: '' });
-    name.focus();
+    fields.name.focus();
   };
-  panel.querySelector<HTMLButtonElement>('#import-persona')!.onclick = () => {
-    if (canAdd()) file.click();
-  };
-  file.onchange = async () => {
-    const chosen = file.files?.[0];
-    file.value = '';
-    if (!chosen) return;
-    try {
-      if (chosen.size > 2 * 1024 * 1024) throw new Error('请选择小于 2 MiB 的 JSON 角色卡。');
-      const card = importPersonaJson(await chosen.text(), crypto.randomUUID());
-      if (canLeave()) {
-        edit(card);
-        notify('已读取角色资料。确认内容后点「保存并使用」。');
-      }
-    } catch (error) {
-      notify(error instanceof Error ? error.message : String(error), true);
-    }
-  };
+  load.onclick = () =>
+    void action(async () => {
+      const card = await api.importPersonaCard();
+      if (card && (await canLeave())) edit(card);
+    });
+  for (const format of ['json', 'png'] as const)
+    exports[format].onclick = () =>
+      void action(async () => {
+        if (await api.exportPersonaCard(read(), format))
+          find('#persona-status').textContent = '已导出 ' + format.toUpperCase() + ' 角色卡。';
+      });
   form.oninput = update;
   form.onsubmit = (event) => {
     event.preventDefault();
     if (save.disabled) return;
     const card = read();
-    const cards = isDraft()
-      ? [...library.cards, card]
-      : library.cards.map((c) => (c.id === card.id ? card : c));
-    void persist({ active: card.id, cards });
+    const cards = saved(card.id)
+      ? library.cards.map((existing) => (existing.id === card.id ? card : existing))
+      : [...library.cards, card];
+    void action(() => persist({ active: library.active, cards }, card.id));
   };
-  revert.onclick = () => {
-    if (canLeave()) edit(isDraft() ? current() : draft);
-  };
-  remove.onclick = () => {
-    if (draft.id === library.active || !window.confirm('删除角色卡「' + draft.name + '」？'))
-      return;
-    void persist({
-      active: library.active,
-      cards: library.cards.filter((card) => card.id !== draft.id),
+  apply.onclick = () =>
+    void action(async () => {
+      await persist({ ...library, active: selected.id }, selected.id);
     });
+  revert.onclick = async () => {
+    if (await canLeave()) edit(saved(selected.id) || saved(library.active)!, false);
+  };
+  remove.onclick = async () => {
+    if (
+      selected.id === library.active ||
+      !(await ask('删除角色卡「' + selected.name + '」？', '删除角色卡'))
+    )
+      return;
+    const cards = library.cards.filter((card) => card.id !== selected.id);
+    void action(() => persist({ active: library.active, cards }, library.active));
   };
   return render;
 }

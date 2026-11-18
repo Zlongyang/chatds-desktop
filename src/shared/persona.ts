@@ -14,7 +14,9 @@ export const DEFAULT_PERSONA = `你叫小鱼，是一个有自己喜好和判断
 对方：这个事先不聊了。
 小鱼：行，换个话题。`;
 
-export function personaLibrary(config: Pick<AppConfig, 'persona' | 'personaLibrary'>) {
+export function personaLibrary(
+  config: Pick<AppConfig, 'persona' | 'personaLibrary'>,
+): NonNullable<AppConfig['personaLibrary']> {
   if (config.personaLibrary) return config.personaLibrary;
   const card = {
     id: 'original',
@@ -31,25 +33,43 @@ export function personaLibrary(config: Pick<AppConfig, 'persona' | 'personaLibra
   return { active: card.id, cards: [card] };
 }
 
-export function activePersonaName(config: AppConfig): string {
+export function activePersonaCard(config: AppConfig, roomId?: string): PersonaCard | undefined {
   const library = config.personaLibrary;
-  return library?.cards.find((card) => card.id === library.active)?.name ?? '小鱼';
+  const selected = roomId && config.conversations[roomId]?.personaId;
+  return (
+    (selected && library?.cards.find((card) => card.id === selected)) ||
+    library?.cards.find((card) => card.id === library.active)
+  );
+}
+
+export function activePersonaName(config: AppConfig, roomId?: string): string {
+  return activePersonaCard(config, roomId)?.name ?? '小鱼';
+}
+
+export function resolveCardWriting(text: string, name: string) {
+  return text.replace(/\{\{(char|user)\}\}/gi, (_token, who: string) =>
+    who.toLowerCase() === 'char' ? name : '对方',
+  );
 }
 
 export function personaText(card: PersonaCard) {
-  if (card.name === '小鱼') {
-    if (!card.personality && !card.examples) return card.description.trim();
+  if (card.name === '小鱼' && !card.scenario && !card.greeting) {
+    if (!card.personality && !card.examples)
+      return resolveCardWriting(card.description.trim(), card.name);
     const original = [card.description, card.personality, '示例：', card.examples].join('\n');
     if (original === DEFAULT_PERSONA) return DEFAULT_PERSONA;
   }
-  return [
+  const writing = [
     card.name.trim() && '名字：' + card.name.trim(),
     card.description.trim(),
     card.personality.trim() && '说话方式：\n' + card.personality.trim(),
+    card.scenario?.trim() && '虚构场景：\n' + card.scenario.trim(),
+    card.greeting?.trim() && '开场白参考：\n' + card.greeting.trim(),
     card.examples.trim() && '对话示例：\n' + card.examples.trim(),
   ]
     .filter(Boolean)
     .join('\n\n');
+  return resolveCardWriting(writing, card.name.trim());
 }
 
 /** Import plain character writing only. Tavern extensions and prompt overrides have no representation here. */
@@ -64,18 +84,53 @@ export function importPersonaJson(text: string, id: string): PersonaCard {
   const read = (key: string) => (typeof source?.[key] === 'string' ? source[key].trim() : '');
   const name = read('name');
   if (!name || name.length > 80) throw new Error('角色卡需要 1 到 80 个字符的名字。');
-  const writing = (key: string) =>
-    read(key).replace(/\{\{(char|user)\}\}/gi, (_token: string, who: string) =>
-      who.toLowerCase() === 'char' ? name : '对方',
-    );
+  const avatar = read('avatar');
   const result = {
     id,
     name,
-    description: [writing('description'), writing('scenario')].filter(Boolean).join('\n\n'),
-    personality: writing('personality'),
-    examples: [writing('first_mes'), writing('mes_example')].filter(Boolean).join('\n\n'),
+    description: read('description'),
+    personality: read('personality') || read('persona'),
+    examples: read('mes_example'),
+    scenario: read('scenario'),
+    greeting: read('first_mes'),
+    creator: read('creator'),
+    avatar: avatar.length <= 16 && !/[/:\\.]/.test(avatar) && avatar !== 'none' ? avatar : '',
   };
-  if (!(result.description || result.personality || result.examples))
+  if (!(
+    result.description ||
+    result.personality ||
+    result.examples ||
+    result.scenario ||
+    result.greeting
+  ))
     throw new Error('角色卡缺少角色介绍、性格或对话示例。');
   return result;
+}
+
+export function exportPersonaJson(card: PersonaCard): string {
+  return JSON.stringify(
+    {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: {
+        name: card.name,
+        description: card.description,
+        personality: card.personality,
+        scenario: card.scenario ?? '',
+        first_mes: card.greeting ?? '',
+        mes_example: card.examples,
+        creator: card.creator ?? '',
+        creator_notes: '',
+        character_version: '',
+        tags: [],
+        system_prompt: '',
+        post_history_instructions: '',
+        alternate_greetings: [],
+        extensions: {},
+        ...(card.avatar ? { avatar: card.avatar } : {}),
+      },
+    },
+    null,
+    2,
+  );
 }

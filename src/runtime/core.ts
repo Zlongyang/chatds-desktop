@@ -12,7 +12,8 @@ import type {
   WebReadReceipt,
 } from '../shared/types.js';
 import { DEFAULT_CONVERSATION, errorText, TOOL_INFO } from '../shared/config.js';
-import { activePersonaName } from '../shared/persona.js';
+import { activePersonaCard, activePersonaName, personaText } from '../shared/persona.js';
+import { tavernContextText } from '../shared/tavern-context.js';
 import { boundText, checkAbort, id, Semaphore, stableDay } from '../shared/util.js';
 import { toolArguments, toolSchema } from '../shared/tools.js';
 import { piModel } from '../shared/model-definition.js';
@@ -448,14 +449,24 @@ export class RuntimeCore extends EventEmitter {
         return tools;
       };
       let runTools = toolsFor(cap);
-      let replyName = activePersonaName(this.config);
+      const roomPrompt = (facts: Parameters<typeof composePrompt>[2], summary: string) => {
+        const card = activePersonaCard(this.config, room.id);
+        return composePrompt(
+          card ? personaText(card) : this.config.persona,
+          cap,
+          facts,
+          summary,
+          tavernContextText(this.config, room.id),
+        );
+      };
+      let replyName = activePersonaName(this.config, room.id);
       const priorRuns = this.store.contextRuns(room.id);
       const prior = priorRuns.flatMap((r) => r.messages);
       for (const fact of priorRuns.flatMap((r) => r.factRefs)) usedFacts.add(fact);
       const wire: AgentMessage[] = [];
       const agent = new Agent({
         initialState: {
-          systemPrompt: composePrompt(this.config.persona, cap, [], ''),
+          systemPrompt: roomPrompt([], ''),
           model: piModel(this.config.model),
           tools: runTools,
           messages: trimContext(prior, 8000),
@@ -520,9 +531,9 @@ export class RuntimeCore extends EventEmitter {
                     quoted: m.quoted,
                   }))
               : [];
-            replyName = activePersonaName(this.config);
+            replyName = activePersonaName(this.config, room.id);
             const system =
-              composePrompt(this.config.persona, cap, facts, this.store.getSummary(room.id)) +
+              roomPrompt(facts, this.store.getSummary(room.id)) +
               (previousNoRead
                 ? '\n对方正在追问。上一轮已说明没有读取网页，这次请直接回应追问，避免重复设置说明。'
                 : '') +

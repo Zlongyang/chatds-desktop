@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 const names = [
   'state',
   'configure',
+  'importPersonaCard',
+  'exportPersonaCard',
   'chat',
   'history',
   'conversation',

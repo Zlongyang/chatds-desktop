@@ -5,6 +5,7 @@ import {
   personaLibrary,
   personaText,
   importPersonaJson,
+  exportPersonaJson,
   activePersonaName,
 } from '../shared/persona.js';
 import { removeTemporary, temporary } from './helpers.js';
@@ -38,6 +39,11 @@ test('legacy full-length persona survives selecting a different card and switchi
   store.update({ personaLibrary: library });
   const config = new ConfigStore(dir).value;
   assert.equal(activePersonaName(config), '阿青');
+  const exported = JSON.parse(exportPersonaJson(card));
+  assert.equal(exported.data.scenario, '山林');
+  assert.equal(exported.data.first_mes, '山里起雾了。');
+  assert.equal(exported.data.mes_example, '{{user}}：好冷。\n{{char}}：进来暖暖。');
+  assert.equal(exported.data.system_prompt, '');
   assert.equal(config.persona, personaText(card));
   assert.match(config.persona, /山林/);
   assert.match(config.persona, /进来暖暖/);
@@ -51,6 +57,28 @@ test('legacy full-length persona survives selecting a different card and switchi
   store.update({ persona: '旧接口保存' });
   assert.equal(personaLibrary(store.value).cards[0]!.description, '旧接口保存');
   assert.equal(personaLibrary(store.value).cards[1]!.name, '阿青');
+});
+
+test('removing a saved card returns only its selected rooms to their default role', (t) => {
+  const profile = temporary();
+  t.after(() => removeTemporary(profile));
+  const store = new ConfigStore(profile);
+  const primary = personaLibrary(store.value).cards[0]!;
+  const other = importPersonaJson('{"name":"青","scenario":"林中"}', 'forest');
+  const room = 'onebot:group:12345';
+  const defaults = { mode: 'companion' as const, muted: false, ambient: false };
+  store.update({
+    personaLibrary: { active: primary.id, cards: [primary, other] },
+    conversations: {
+      [room]: { ...defaults, personaId: other.id },
+      'desktop:owner': { ...defaults, personaId: primary.id },
+    },
+  });
+  assert.equal(activePersonaName(store.value, room), '青');
+  store.update({ personaLibrary: { active: primary.id, cards: [primary] } });
+  assert.equal(store.value.conversations[room]?.personaId, null);
+  assert.equal(store.value.conversations['desktop:owner']?.personaId, primary.id);
+  assert.equal(activePersonaName(new ConfigStore(profile).value, room), '小鱼');
 });
 
 test('import accepts plain and v3 character JSON as text; rejects missing name or all writing', () => {

@@ -40,6 +40,13 @@ export async function openDesktop(
       '  fs.unlinkSync(picker);',
       '  return {canceled:false, filePaths:[path]};',
       '};',
+      'dialog.showSaveDialog = async (_, options) => {',
+      '  if (!fs.existsSync(picker)) return {canceled:true};',
+      "  const {title, path, kind} = JSON.parse(fs.readFileSync(picker, 'utf8'));",
+      "  if (title !== options.title || kind !== 'saveFile') throw new Error('Unexpected save picker');",
+      '  fs.unlinkSync(picker);',
+      '  return {canceled:false, filePath:path};',
+      '};',
       ...(captureNapcatLaunch
         ? [
             "const childProcess = require('node:child_process');",
@@ -203,14 +210,19 @@ export async function openDesktop(
       await delay(75);
     }
     async function chooseNext(path, title, kind) {
-      const chosen = await realpath(path);
+      const chosen = await realpath(path).catch(async (error) => {
+        if (kind !== 'saveFile' || error.code !== 'ENOENT') throw error;
+        return join(await realpath(dirname(path)), basename(path));
+      });
       const rel = relative(profile, chosen);
       assert.ok(
         rel && !rel.startsWith('..') && !isAbsolute(rel),
         'Expected a fixture inside the isolated profile',
       );
-      const item = await stat(chosen);
-      assert.ok(kind === 'openFile' ? item.isFile() : item.isDirectory());
+      if (kind !== 'saveFile') {
+        const item = await stat(chosen);
+        assert.ok(kind === 'openFile' ? item.isFile() : item.isDirectory());
+      }
       await writeFile(selection, JSON.stringify({ path: chosen, title, kind }), { flag: 'wx' });
     }
     return {
@@ -237,6 +249,14 @@ export async function openDesktop(
         const { data } = await rpc('Page.captureScreenshot', { format: 'png' });
         await writeFile(path, Buffer.from(data, 'base64'));
       },
+      async resizeViewport(width, height) {
+        await rpc('Emulation.setDeviceMetricsOverride', {
+          width,
+          height,
+          deviceScaleFactor: 1,
+          mobile: false,
+        });
+      },
       async insertText(text) {
         await rpc('Input.insertText', { text });
       },
@@ -245,6 +265,9 @@ export async function openDesktop(
       },
       async chooseNextFile(path, title) {
         await chooseNext(path, title, 'openFile');
+      },
+      async chooseNextSaveFile(path, title) {
+        await chooseNext(path, title, 'saveFile');
       },
       close,
     };

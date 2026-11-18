@@ -26,6 +26,7 @@ import { NapCatSession } from './napcat.js';
 import { NapCatInstallation } from './napcat-installation.js';
 import { installNapCatPackage } from './napcat-package.js';
 import { takeInstallerChoice } from './installer-choice.js';
+import { readPersonaFile, suggestedCardName, writePersonaFile } from './persona-files.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { locationFromFolder, locationFromLink } from './napcat-location.js';
 import { ModelVerification, probeModel } from './model-verification.js';
@@ -36,6 +37,7 @@ import {
   conversationSchema,
   errorText,
   modelSchema,
+  personaCardSchema,
   validateConversationId,
 } from '../shared/config.js';
 import type {
@@ -427,6 +429,27 @@ async function start(): Promise<void> {
   }
   const handlers: Record<string, (...args: any[]) => unknown | Promise<unknown>> = {
     state: () => snapshot(),
+    importPersonaCard: async () => {
+      const selected = await dialog.showOpenDialog(win!, {
+        title: '导入角色卡',
+        properties: ['openFile'],
+        filters: [{ name: '酒馆角色卡', extensions: ['json', 'png'] }],
+      });
+      const path = selected.filePaths[0];
+      return selected.canceled || !path ? null : readPersonaFile(path, nativeImage);
+    },
+    exportPersonaCard: async (input: unknown, requestedFormat: unknown) => {
+      const card = personaCardSchema.parse(input);
+      const format = z.enum(['json', 'png']).parse(requestedFormat);
+      const selected = await dialog.showSaveDialog(win!, {
+        title: '导出角色卡',
+        defaultPath: suggestedCardName(card.name, format),
+        filters: [{ name: format.toUpperCase() + ' 角色卡', extensions: [format] }],
+      });
+      if (selected.canceled || !selected.filePath) return false;
+      await writePersonaFile(selected.filePath, card, format, nativeImage);
+      return true;
+    },
     configure: async (input: unknown) => {
       const change = z
         .object({

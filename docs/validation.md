@@ -43,15 +43,32 @@ NSIS 已在全新 Windows 运行器完成安装、首次配置本机模型、桌
 ```powershell
 node scripts/test-tool-journey.mjs --archive release/win-unpacked/resources/app.asar
 node scripts/test-qq-chat.mjs --archive release/win-unpacked/resources/app.asar
+node scripts/test-persona-journey.mjs --archive release/win-unpacked/resources/app.asar
 ```
 
 工具测试通过本机 HTTP 模型安排可复现的调用，实际读取或修改临时工作区。选择技能目录时，驱动向原生目录选择器返回测试文件夹。隔离工具按本机 Docker 与镜像状态验证可用或不可用的路径。QQ 测试模拟 NapCat 手机确认、OneBot 对端和模型，检查真实桌面配置、WebSocket 收发、回执与重启后的记录。群聊用例从界面添加允许的群，核对连续两句只回复一次，以及群友互相 @ 时保持安静。
+
+人设测试从文件选择和角色卡表单开始，验证 JSON / PNG 导入导出、保存与启用分离、会话专属选卡、模型请求里的实际资料、开场白、删除回退和重启恢复。短窗口截图也在本次测试输出目录。
 
 真实公网评测需要在当前终端设置 `DEEPSEEK_API_KEY`。下面的命令会产生模型费用，也会访问模型选择的公开网页。脚本从首次启动表单输入密钥，在聊天框询问 Anthropic 近期公告，追问后切换模式并开启网页读取，最后重启并核对可见记录。截图和回复保存在 `test-results` 下。
 
 ```powershell
 node scripts/test-web-chat.mjs --live --require-official --archive release/win-unpacked/resources/app.asar
 ```
+
+## 与原版 NapCat 的离线协议对照
+
+准备 NapCatQQ 提交 `9335843246e3b7a17944861f3ac8731a259732c2` 的 GitHub 源码 ZIP。脚本核对整个 ZIP 的 SHA-256 为 `cff1482513eb4fecc49a8a8bff58d89fb3dda11fc5889231b1c55abce6eabd56`，随后在临时目录编译并运行该版的鉴权、QQ 登录路由、OneBot 配置路由与正向 WebSocket 服务端。[获取固定提交的源码 ZIP](https://codeload.github.com/NapNeko/NapCatQQ/zip/9335843246e3b7a17944861f3ac8731a259732c2) · [上游许可证](https://github.com/NapNeko/NapCatQQ/blob/9335843246e3b7a17944861f3ac8731a259732c2/LICENSE)
+
+将源码 ZIP 保存到 `.cache/NapCatQQ-source-4.18.42.zip`，在已执行 `npm ci` 的仓库运行以下命令。附加依赖仅安装到本地测试目录。
+
+```powershell
+npm run build
+npm install --prefix .cache/napcat-upstream-tools --no-save --ignore-scripts --no-audit --no-fund express@5.1.0 @sinclair/typebox@0.34.41 esbuild@0.25.12 json5@2.2.3
+node scripts/test-napcat-upstream.mjs --source .cache/NapCatQQ-source-4.18.42.zip
+```
+
+ChatDS 客户端经本机随机端口实际调用登录、查询扫码状态、刷新二维码、读取账号、读取及更新 OneBot 配置六个接口，再通过原版正向 WebSocket 验证 Bearer 令牌和群消息传递。QQ 登录回调、账号资料与群消息输入使用合成数据。手机扫码、当前 QQ 客户端给出的二维码域名、腾讯服务投递和具体 QQ 版本兼容性仍须真号验证。测试仅在本机临时目录处理上游源码。
 
 ## 陪伴模式的多轮盲评
 

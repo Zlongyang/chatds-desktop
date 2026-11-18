@@ -58,6 +58,11 @@
                   <small id="chat-phase" class="muted">空闲</small>
                 </div>
                 <div class="row">
+                  <select
+                    id="room-persona"
+                    title="当前会话的角色"
+                    aria-label="当前会话的角色"
+                  ></select>
                   <select id="mode" aria-label="当前会话模式">
                     <option value="companion">纯陪伴（不读网页）</option>
                     <option value="assistant">受控助理</option></select
@@ -274,61 +279,166 @@
           </article>
         </section>
         <section id="page-persona" class="page hidden">
-          <article class="card padded">
-            <div class="section-heading">
-              <h2>我的角色卡</h2>
-              <div class="row">
-                <button type="button" id="new-persona">新建</button>
-                <button type="button" id="import-persona">导入酒馆 JSON</button>
-                <input type="file" id="persona-file" accept=".json,application/json" hidden />
+          <div class="persona-workspace">
+            <aside class="persona-library card" aria-labelledby="persona-library-heading">
+              <div class="persona-library-head">
+                <h2 id="persona-library-heading">角色卡库</h2>
+                <small id="persona-count"></small>
               </div>
-            </div>
-            <label>选择角色卡<select id="persona-list"></select></label>
-            <form id="persona-form">
-              <label
-                >角色名字<input
-                  id="persona-name"
-                  required
-                  maxlength="80"
-                  placeholder="对话中显示的名字"
-              /></label>
-              <label
-                >角色介绍<textarea
-                  id="persona"
-                  rows="3"
-                  maxlength="20000"
-                  placeholder="它是谁，有什么喜好？"
-                ></textarea>
-              </label>
-              <label
-                >说话方式<textarea
-                  id="persona-style"
-                  rows="3"
-                  maxlength="20000"
-                  placeholder="比如：有点慢热，偶尔吐槽，倾听时不急着给建议。"
-                ></textarea>
-              </label>
-              <label
-                >对话示例<textarea
-                  id="persona-examples"
-                  rows="3"
-                  maxlength="20000"
-                  placeholder="写下你觉得像它的一两句对话。"
-                ></textarea>
-              </label>
-              <details class="persona-preview">
-                <summary>预览模型将读到的角色资料</summary>
-                <pre id="persona-preview"></pre>
-              </details>
-              <div class="row between persona-actions">
-                <small id="persona-status" class="muted" role="status"></small>
-                <div class="row">
-                  <button type="button" id="delete-persona">删除这张卡</button>
-                  <button type="button" id="revert-persona">撤销编辑</button>
-                  <button type="submit" id="save-persona" class="primary">保存并使用</button>
+              <div class="persona-library-tools">
+                <button type="button" id="new-persona">＋ 新建</button>
+                <button type="button" id="import-persona" title="选择酒馆 JSON 或 PNG 角色卡">
+                  导入角色卡
+                </button>
+              </div>
+              <div id="persona-list" aria-label="已保存的角色卡"></div>
+              <button type="button" id="persona-context-link">
+                我的人设与世界书 <span aria-hidden="true">↓</span>
+              </button>
+            </aside>
+            <article class="persona-detail card">
+              <form id="persona-form" novalidate>
+                <header class="persona-heading">
+                  <div id="persona-avatar-preview" class="persona-avatar" aria-hidden="true"></div>
+                  <div class="persona-heading-copy">
+                    <h2 id="persona-title"></h2>
+                    <span id="persona-role"></span>
+                  </div>
+                  <button type="button" id="apply-persona">设为默认</button>
+                </header>
+                <div class="persona-tabs" role="group" aria-label="编辑内容">
+                  <button type="button" data-persona-tab="profile" aria-controls="persona-profile">
+                    角色资料
+                  </button>
+                  <button
+                    type="button"
+                    data-persona-tab="dialogue"
+                    aria-controls="persona-dialogue"
+                  >
+                    场景与对话
+                  </button>
+                  <button type="button" data-persona-tab="preview" aria-controls="persona-prompt">
+                    模型预览
+                  </button>
                 </div>
+                <div id="persona-profile" class="persona-fields">
+                  <div class="persona-identity">
+                    <label
+                      >角色名字<input
+                        id="persona-name"
+                        required
+                        maxlength="80"
+                        placeholder="角色的名字"
+                    /></label>
+                    <label
+                      >头像标识<input id="persona-avatar" maxlength="16" placeholder="一个 emoji"
+                    /></label>
+                  </div>
+                  <label
+                    >角色描述<textarea
+                      id="persona"
+                      rows="3"
+                      maxlength="20000"
+                      placeholder="角色是谁？写下背景、经历或喜好。"
+                    ></textarea>
+                  </label>
+                  <label
+                    >性格与说话方式<textarea
+                      id="persona-style"
+                      rows="3"
+                      maxlength="20000"
+                      placeholder="角色如何表达自己，怎样与人相处？"
+                    ></textarea>
+                  </label>
+                  <label
+                    >作者<input id="persona-creator" maxlength="160" placeholder="署名（选填）"
+                  /></label>
+                </div>
+                <div id="persona-dialogue" class="persona-fields" hidden>
+                  <label
+                    >场景<textarea
+                      id="persona-scenario"
+                      rows="3"
+                      maxlength="20000"
+                      placeholder="角色和对话者在哪里？正在发生什么？"
+                    ></textarea>
+                  </label>
+                  <label
+                    >开场白<textarea
+                      id="persona-greeting"
+                      rows="3"
+                      maxlength="20000"
+                      placeholder="写下角色在空白桌面对话中说的第一句话。"
+                    ></textarea>
+                  </label>
+                  <label
+                    >对话示例<textarea
+                      id="persona-examples"
+                      rows="4"
+                      maxlength="20000"
+                      placeholder="用一两轮对话表现角色的语气。"
+                    ></textarea>
+                  </label>
+                </div>
+                <div id="persona-prompt" class="persona-fields" hidden>
+                  <h3>模型将读到的角色资料</h3>
+                  <pre id="persona-preview"></pre>
+                </div>
+                <div class="persona-savebar">
+                  <small id="persona-status" role="status"></small>
+                  <button type="button" id="revert-persona">撤销修改</button>
+                  <button type="submit" id="save-persona" class="primary">保存角色卡</button>
+                </div>
+              </form>
+              <footer class="persona-file-actions">
+                <button type="button" id="export-persona-json">导出 JSON</button>
+                <button type="button" id="export-persona-png">导出 PNG</button>
+                <button type="button" id="delete-persona">删除角色卡</button>
+              </footer>
+            </article>
+          </div>
+          <dialog id="persona-confirm" aria-labelledby="persona-confirm-title">
+            <form method="dialog">
+              <h2 id="persona-confirm-title"></h2>
+              <div class="row end">
+                <button value="back" autofocus>返回编辑</button>
+                <button id="persona-confirm-action" value="confirm"></button>
               </div>
             </form>
+          </dialog>
+          <article id="tavern-context" class="card padded">
+            <h2>我的人设与世界书</h2>
+            <label>设置哪个会话<select id="tavern-room"></select></label>
+            <label id="tavern-owner-field"
+              >这个会话使用的我的人设<select id="tavern-user"></select
+            ></label>
+            <p id="tavern-owner-note" class="muted">我的人设仅用于桌面聊天和主号私聊。</p>
+            <fieldset>
+              <legend>这个会话使用的世界条目</legend>
+              <div id="tavern-world"></div>
+            </fieldset>
+            <details id="tavern-library">
+              <summary>编辑资料库</summary>
+              <form id="tavern-form">
+                <div class="row">
+                  <label
+                    >资料类型<select id="tavern-kind">
+                      <option value="userPersonas">我的人设卡</option>
+                      <option value="worldEntries">世界书条目</option>
+                    </select></label
+                  >
+                  <label>资料条目<select id="tavern-entry"></select></label>
+                </div>
+                <label>名称<input id="tavern-name" maxlength="80" required /></label>
+                <label
+                  >内容<textarea id="tavern-text" rows="4" maxlength="4000" required></textarea>
+                </label>
+                <div class="row">
+                  <button type="submit" class="primary" id="tavern-save">保存资料</button
+                  ><button type="button" id="tavern-delete">删除条目</button>
+                </div>
+              </form>
+            </details>
           </article>
         </section>
         <section id="page-tools" class="page hidden">

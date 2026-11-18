@@ -51,6 +51,8 @@ jobs:
           node scripts/test-tool-journey.mjs --archive release/win-unpacked/resources/app.asar
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/test-qq-chat.mjs --archive release/win-unpacked/resources/app.asar
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/test-persona-journey.mjs --archive release/win-unpacked/resources/app.asar
         shell: pwsh
       - name: Install on fresh Windows, configure the model, chat and uninstall
         shell: pwsh
@@ -65,6 +67,7 @@ jobs:
             test-results/smoke*.png
             test-results/tool-journey.json
             test-results/qq-journey-*/report.json
+            test-results/persona-journey-*/report.json
   sandbox:
     runs-on: ubuntu-latest
     steps:

@@ -39,6 +39,22 @@ export class ConfigStore {
     }
     for (const key of ['model', 'onebot', 'tools', 'memory', 'limits', 'sandbox'] as const)
       if (patch[key]) Object.assign(next, { [key]: { ...current[key], ...patch[key] } });
+    if (patch.personaLibrary && current.personaLibrary) {
+      const remaining = new Set(patch.personaLibrary.cards.map((card) => card.id));
+      const removed = new Set(
+        current.personaLibrary.cards
+          .filter((card) => !remaining.has(card.id))
+          .map((card) => card.id),
+      );
+      next.conversations = Object.fromEntries(
+        Object.entries(next.conversations).map(([id, settings]) => [
+          id,
+          settings.personaId && removed.has(settings.personaId)
+            ? { ...settings, personaId: null }
+            : settings,
+        ]),
+      );
+    }
     return configSchema.parse(next) as AppConfig;
   }
   commit(next: AppConfig): AppConfig {

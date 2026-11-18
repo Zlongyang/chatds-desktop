@@ -1,3 +1,5 @@
+import type { TavernContextLibrary } from './tavern-context.js';
+
 export type ConversationMode = 'companion' | 'assistant';
 export type Trigger = 'direct' | 'continuation' | 'ambient';
 export type ToolId =
@@ -37,6 +39,9 @@ export interface MessageEnvelope {
   directedElsewhere?: boolean;
 }
 export interface ConversationSettings {
+  personaId?: string | null;
+  userPersonaId?: string | null;
+  worldEntryIds?: string[];
   mode: ConversationMode;
   ambient: boolean;
   muted: boolean;
@@ -57,6 +62,7 @@ export interface AppConfig {
   enabled: boolean;
   persona: string;
   personaLibrary?: { active: string; cards: PersonaCard[] };
+  tavernContext?: TavernContextLibrary;
   model: ModelProfile;
   onebot: {
     enabled: boolean;
@@ -89,6 +95,11 @@ export interface PersonaCard {
   description: string;
   personality: string;
   examples: string;
+  avatar?: string;
+  portrait?: string;
+  scenario?: string;
+  greeting?: string;
+  creator?: string;
 }
 export interface RunContext {
   id: string;
@@ -224,6 +235,8 @@ export interface NapCatLoginStatus {
 }
 export interface ChatDSApi {
   state(): Promise<AppSnapshot>;
+  importPersonaCard(): Promise<PersonaCard | null>;
+  exportPersonaCard(card: PersonaCard, format: 'json' | 'png'): Promise<boolean>;
   configure(change: SettingsChange): Promise<AppSnapshot>;
   chat(text: string): Promise<void>;
   history(

@@ -17,8 +17,14 @@ const taskTools: ToolId[] = [
 ];
 /** Global settings affect every run. Persona writing is refreshed on the next model request. */
 export function conversationsToStop(before: AppConfig, after: AppConfig): 'all' | string[] {
-  const global = ({ conversations, persona, personaLibrary, revision, ...settings }: AppConfig) =>
-    settings;
+  const global = ({
+    conversations,
+    persona,
+    personaLibrary,
+    tavernContext,
+    revision,
+    ...settings
+  }: AppConfig) => settings;
   if (!isDeepStrictEqual(global(before), global(after))) return 'all';
   return [
     ...new Set([...Object.keys(before.conversations), ...Object.keys(after.conversations)]),
