@@ -59,9 +59,10 @@
                 </div>
                 <div class="row">
                   <select id="mode" aria-label="当前会话模式">
-                    <option value="companion">纯陪伴</option>
+                    <option value="companion">纯陪伴（不读网页）</option>
                     <option value="assistant">受控助理</option></select
-                  ><button id="stop" class="subtle">停止</button>
+                  ><button type="button" id="chat-web-settings" class="subtle hidden"></button>
+                  <button id="stop" class="subtle">停止</button>
                 </div>
               </div>
               <div id="group-options" class="group-options hidden">

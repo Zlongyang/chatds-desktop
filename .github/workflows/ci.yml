@@ -46,6 +46,12 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - run: node scripts/smoke.mjs --packaged
+      - name: Exercise the packaged desktop through the chat, tools and QQ setup screens
+        run: |
+          node scripts/test-tool-journey.mjs --archive release/win-unpacked/resources/app.asar
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/test-qq-chat.mjs --archive release/win-unpacked/resources/app.asar
+        shell: pwsh
       - name: Install on fresh Windows, configure the model, chat and uninstall
         shell: pwsh
         run: ./scripts/test-installed.ps1
@@ -57,6 +63,8 @@ jobs:
             release/*.zip
             test-results/smoke*.json*
             test-results/smoke*.png
+            test-results/tool-journey.json
+            test-results/qq-journey-*/report.json
   sandbox:
     runs-on: ubuntu-latest
     steps:

@@ -224,7 +224,7 @@ export class Store {
     messageId = id(),
     status: ChatMessage['status'] = 'sent',
     name = '小鱼',
-    webReads: WebReadReceipt[] = [],
+    webReads?: WebReadReceipt[],
   ): string {
     this.transaction(() => {
       this.db
@@ -240,7 +240,7 @@ export class Store {
           text,
           Date.now(),
           status ?? 'sent',
-          webReads.length ? JSON.stringify(webReads) : null,
+          webReads ? JSON.stringify(webReads) : null,
         );
       this.db
         .prepare('UPDATE conversations SET updated=MAX(updated+1,?) WHERE id=?')
@@ -300,17 +300,34 @@ export class Store {
   contextRuns(
     conv: string,
     limit = 24,
-  ): { id: string; messages: AgentMessage[]; sources: string[]; factRefs: string[] }[] {
+  ): {
+    id: string;
+    messages: AgentMessage[];
+    sources: string[];
+    factRefs: string[];
+    userDecision?: 'wait' | 'end';
+  }[] {
     const rows = this.db
       .prepare(
-        "SELECT id,wire,sources,fact_refs FROM runs WHERE conv=? AND excluded=0 AND summarized=0 AND status='complete' ORDER BY time DESC,rowid DESC LIMIT ?",
+        "SELECT id,wire,sources,fact_refs,status FROM runs WHERE conv=? AND excluded=0 AND summarized=0 AND status IN ('complete','user-wait','user-end') ORDER BY time DESC,rowid DESC LIMIT ?",
       )
-      .all(conv, limit) as { id: string; wire: string; sources: string; fact_refs: string }[];
+      .all(conv, limit) as {
+      id: string;
+      wire: string;
+      sources: string;
+      fact_refs: string;
+      status: string;
+    }[];
     return rows.reverse().map((r) => ({
       id: r.id,
       messages: JSON.parse(r.wire),
       sources: JSON.parse(r.sources),
       factRefs: JSON.parse(r.fact_refs),
+      ...(r.status === 'user-wait'
+        ? { userDecision: 'wait' as const }
+        : r.status === 'user-end'
+          ? { userDecision: 'end' as const }
+          : {}),
     }));
   }
   context(conv: string, limit = 24): AgentMessage[] {

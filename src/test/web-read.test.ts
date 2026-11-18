@@ -60,6 +60,26 @@ test('plain text and JSON preserve literal markup, entities and line breaks', as
   }
 });
 
+test('HTML article labels keep usable same-site URLs without automatically opening links', async (t) => {
+  const html =
+    '<a href="/news/first#main">第一条公告</a> <a href="https://elsewhere.test/ad">广告</a>';
+  const response = Object.assign(Readable.from([Buffer.from(html)]), {
+    statusCode: 200,
+    headers: { 'content-type': 'text/html' },
+  });
+  const request = t.mock.method(
+    https,
+    'get',
+    (_url: URL, _options: RequestOptions, respond: (res: typeof response) => void) => {
+      respond(response);
+      return new EventEmitter();
+    },
+  );
+  const page = await webRead('https://1.1.1.1/news', new AbortController().signal);
+  assert.equal(page.text, '第一条公告 (https://1.1.1.1/news/first) 广告');
+  assert.equal(request.mock.callCount(), 1);
+});
+
 test('a successful HTTP response containing only scripts and styles has no readable text', async (t) => {
   const response = Object.assign(
     Readable.from([Buffer.from('<script>app()</script><style>p{}</style>')]),

@@ -147,6 +147,10 @@ $('#collapse').onclick = () => {
 if (localStorage.getItem('chatds-sidebar') === 'collapsed') $('.app').classList.add('collapsed');
 $('#local-room').onclick = () => chooseRoom('desktop:owner');
 $('#model-badge').onclick = $('#chat-setup').onclick = () => navigate('settings');
+$('#chat-web-settings').onclick = () => {
+  navigate('tools');
+  document.getElementById('tool-web_read')?.focus();
+};
 $('#room-connect').onclick = $('#setup-qq').onclick = () => navigate('connections');
 $('#setup-persona').onclick = () => navigate('persona');
 $('#setup-chat').onclick = () => {
@@ -344,6 +348,14 @@ function renderChat() {
       ? '此会话只同步消息'
       : (room?.error ?? (waiting ? '等待你的确认' : phases[room?.phase ?? 'idle']!));
   select('#mode').value = settings.mode;
+  $('#chat-web-settings').classList.toggle(
+    'hidden',
+    !local || !modelReady(s) || settings.mode !== 'assistant',
+  );
+  $('#chat-web-settings').textContent = s.config.tools.web_read
+    ? '网页读取已开启'
+    : '网页读取已关闭';
+  $('#chat-web-settings').title = '管理阅读公开网页权限';
   field('#ambient').disabled = settings.muted;
   field('#ambient').checked = !settings.muted && settings.ambient;
   field('#muted').checked = settings.muted;
@@ -423,6 +435,8 @@ function messageNode(message: ChatMessage) {
   const row = el('div', 'message ' + message.role),
     body = el('div', 'message-body');
   body.append(el('div', 'message-name', message.name), el('div', 'bubble', message.text));
+  if (message.role === 'assistant' && message.webReads?.length === 0)
+    body.append(el('small', 'web-receipts', '本轮未读取网页'));
   if (message.role === 'assistant' && message.webReads?.length) {
     const receipts = el('ul', 'web-receipts');
     receipts.setAttribute('aria-label', '本次实际网页读取记录');
@@ -482,6 +496,7 @@ function renderTools(snapshot: AppSnapshot) {
     copy.append(el('p', '', toolLabels[tool]), el('code', '', key));
     const input = document.createElement('input');
     input.type = 'checkbox';
+    input.id = 'tool-' + tool;
     input.checked = enabled;
     if (tool === 'sandbox_exec' && !snapshot.sandbox.available) {
       input.disabled = !enabled;

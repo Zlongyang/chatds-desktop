@@ -421,6 +421,57 @@ test('web receipts persist only on the reply that performed the reads', async (t
   );
 });
 
+test('an unattempted page failure in chat_reply is corrected in delivery and future context', async (t) => {
+  const { host, core, store, send } = fixture(t);
+  const claim = '还是同一个坎——我这边网页打不开，Anthropic 那边最近有什么也没法确认。';
+  host.steps.push(() => toolCall('chat_reply', { text: claim }));
+  send('那 Anthropic 呢？');
+  await core.idle();
+  assert.equal(host.tools.length, 0);
+  assert.equal(host.requests.length, 1);
+  const reply = store.history('desktop:owner').at(-1)!;
+  assert.deepEqual(reply.webReads, []);
+  assert.match(reply.text, /纯陪伴.*没有读取网页/u);
+  assert.ok(!JSON.stringify(store.context('desktop:owner')).includes(claim));
+  assert.ok(JSON.stringify(store.context('desktop:owner')).includes(reply.text));
+  host.steps.push(() => assistant('你说“我这边网页打不开”，是所有网页都这样吗？'));
+  send('我自己的浏览器遇到问题了');
+  await core.idle();
+  assert.match(store.history('desktop:owner').at(-1)!.text, /所有网页/u);
+});
+
+test('a desktop news request retries once with fresh evidence and drops the unsent draft', async (t) => {
+  const { host, core, store, send } = fixture(t);
+  host.config.tools.web_read = true;
+  host.config.conversations['desktop:owner'] = { mode: 'assistant', ambient: false, muted: false };
+  core.configure(host.config);
+  const source = 'https://example.org/news';
+  const claim = '我这边网页打不开。';
+  host.toolHandler = async () => ({ url: source, text: '已发布桌面版。' });
+  host.steps.push(
+    () => assistant(claim),
+    () => toolCall('web_read', { url: source }),
+    () => assistant('官网公布了桌面版。' + source),
+  );
+  send('Anthropic 最近公开了什么消息？');
+  await core.idle();
+  assert.equal(host.requests.length, 3);
+  assert.deepEqual(host.tools, [{ tool: 'web_read', args: { url: source } }]);
+  assert.ok(!JSON.stringify(host.requests[1]).includes(claim));
+  assert.ok(!JSON.stringify(store.context('desktop:owner')).includes(claim));
+  assert.deepEqual(store.history('desktop:owner').at(-1)?.webReads, [
+    { host: 'example.org', status: 'read' },
+  ]);
+  host.steps.push(
+    () => assistant(claim),
+    () => assistant(claim),
+  );
+  send('帮我查一下官网');
+  await core.idle();
+  assert.equal(host.requests.length, 5);
+  assert.match(store.history('desktop:owner').at(-1)!.text, /没读到可核实的来源/u);
+});
+
 test('forget also invalidates replies derived from previously recalled facts', async (t) => {
   const { host, core, store, send } = fixture(t);
   host.steps.push(

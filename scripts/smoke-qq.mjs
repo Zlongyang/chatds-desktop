@@ -1,20 +1,32 @@
 import { once } from 'node:events';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 
 // Exercise the actual renderer, IPC bridge, HTTP client and OneBot socket with a local account fixture.
-export async function startQQFixture() {
-  let polls = 0;
-  const server = createServer((req, res) => {
-    req.resume();
+export async function startQQFixture({ autoConfirm = true } = {}) {
+  let loginStep = 0;
+  const sends = [];
+  const actions = [];
+  let accountChecks = 0;
+  const server = createServer(async (req, res) => {
     const reply = (data) => res.end(JSON.stringify({ code: 0, data }));
-    if (req.url === '/api/auth/login') return reply({ Credential: 'smoke-session' });
+    if (req.url === '/api/auth/login') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      const hash = createHash('sha256').update('fixture.napcat').digest('hex');
+      if (JSON.parse(body).hash !== hash) return res.writeHead(401).end();
+      return reply({ Credential: 'smoke-session' });
+    }
+    req.resume();
     if (req.headers.authorization !== 'Bearer smoke-session') return res.writeHead(401).end();
     if (req.url === '/api/QQLogin/CheckLoginStatus') {
-      polls++;
-      if (polls === 1)
+      const step = loginStep;
+      if (autoConfirm) loginStep++;
+      if (step === 0)
         return reply({ isLogin: false, qrcodeurl: 'https://txz.qq.com/p?k=local-fixture' });
-      if (polls === 2) return reply({ isLogin: false, loginPhase: 'qrcode_scanned' });
+      if (step === 1) return reply({ isLogin: false, loginPhase: 'qrcode_scanned' });
       return reply({ isLogin: true, coreReady: true });
     }
     if (req.url === '/api/QQLogin/GetQQLoginInfo') return reply({ uin: '10001' });
@@ -41,16 +53,50 @@ export async function startQQFixture() {
   });
   sockets.on('connection', (ws) => {
     ws.on('message', (raw) => {
-      const { action, echo } = JSON.parse(raw.toString());
-      if (action === 'get_login_info')
+      const { action, params, echo } = JSON.parse(raw.toString());
+      actions.push(action);
+      if (action === 'get_login_info') {
+        accountChecks++;
         ws.send(JSON.stringify({ retcode: 0, status: 'ok', echo, data: { user_id: 10001 } }));
-      else ws.close();
+      } else if (action === 'send_private_msg') {
+        const messageId = 60000 + sends.length;
+        sends.push({ action, params, messageId });
+        ws.send(
+          JSON.stringify({ retcode: 0, status: 'ok', echo, data: { message_id: messageId } }),
+        );
+      } else ws.close();
     });
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   return {
     port: server.address().port,
+    sends,
+    actions,
+    advanceLogin() {
+      loginStep++;
+    },
+    get accountChecks() {
+      return accountChecks;
+    },
+    privateMessage({ userId, nickname, text, messageId }) {
+      assert.equal(sockets.clients.size, 1, 'Expected one connected desktop client');
+      const [ws] = sockets.clients;
+      ws.send(
+        JSON.stringify({
+          time: Math.floor(Date.now() / 1000),
+          self_id: 10001,
+          post_type: 'message',
+          message_type: 'private',
+          sub_type: 'friend',
+          message_id: messageId,
+          user_id: userId,
+          sender: { user_id: userId, nickname },
+          raw_message: text,
+          message: [{ type: 'text', data: { text } }],
+        }),
+      );
+    },
     close() {
       for (const ws of sockets.clients) ws.terminate();
       sockets.close();

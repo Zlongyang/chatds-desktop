@@ -34,7 +34,24 @@
 
 DeepSeek 和通用 OpenAI-compatible 两种配置都通过了本地 HTTP 协议测试。测试服务分两段返回工具参数，真实模型 SDK 解析后调用网页工具，下一次请求携带原调用 ID 和对应错误，再将最终回复写入聊天记录。公网和 Docker 的结果分别保存在 `test-results/tools-live-web.json` 和 `test-results/sandbox-real.json`。
 
-安装器尚未做干净 Windows 虚拟机的完整安装／卸载测试，也未做代码签名。
+NSIS 已在全新 Windows 运行器完成安装、首次配置本机模型、桌面首聊和卸载，卸载后从 SQLite 读回了完整对话。安装包未做代码签名。[Windows 安装验收](https://github.com/Zlongyang/chatds-desktop/actions/runs/44206394064/job/134473310438#step:8:1)
+
+## 从桌面操作复测
+
+先运行 `npm run dist:win`。以下命令使用发布包的普通应用入口和全新临时用户目录。交互从窗口中的表单、聊天框和审批按钮开始。每次运行独立配置模型，正式用户目录与账号无需参与。
+
+```powershell
+node scripts/test-tool-journey.mjs --archive release/win-unpacked/resources/app.asar
+node scripts/test-qq-chat.mjs --archive release/win-unpacked/resources/app.asar
+```
+
+工具测试通过本机 HTTP 模型安排可复现的调用，实际读取或修改临时工作区。选择技能目录时，驱动向原生目录选择器返回测试文件夹。隔离工具按本机 Docker 与镜像状态验证可用或不可用的路径。QQ 测试模拟 NapCat 手机确认、OneBot 对端和模型，检查真实桌面配置、WebSocket 收发、回执与重启后的记录。
+
+真实公网评测需要在当前终端设置 `DEEPSEEK_API_KEY`。下面的命令会产生模型费用，也会访问模型选择的公开网页。脚本从首次启动表单输入密钥，在聊天框询问 Anthropic 近期公告，追问后切换模式并开启网页读取，最后重启并核对可见记录。截图和回复保存在 `test-results` 下。
+
+```powershell
+node scripts/test-web-chat.mjs --live --require-official --archive release/win-unpacked/resources/app.asar
+```
 
 ## 陪伴模式的多轮盲评
 
@@ -54,6 +71,8 @@ npm run eval -- --replay --max-calls=50
 ```
 
 默认每次在 `test-results` 下生成新目录。先打开 `blind-review.md`，逐场看谁在说话、是否接住追问、何时保持安静，在表里填 A、B 或平局并记下一句理由。评完再打开 `answer-key.json` 核对版本。`replay.json` 记录请求次数、每轮动作和技术错误。真实 QQ 验收单独进行，回放使用合成发言和本地消息投递。
+
+2026-11-18 用同一个 `deepseek-flash` 和内置小鱼人设对照了 22 条输入、17 轮对话。最终记录中，陪伴组有 12 条可见回复，逐条回复组有 22 条。两组分别有 17 轮和 12 轮符合场景预设的回复或静默时机。修复昵称和明确要求静默的问题后只重跑了受影响的对照，完整过程共发出 51 次真实模型请求。机器复阅中，「谁的杯子」仍有一次没接住指代。这批记录可以人工盲评，目前没有真人自然度评分。
 
 ## 单轮与连发评测
 

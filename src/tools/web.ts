@@ -98,10 +98,34 @@ export async function webRead(
   if (!['text/plain', 'text/html', 'application/json', 'application/xhtml+xml'].includes(mediaType))
     throw new Error('此响应不是可阅读的网页或文字');
   const body = response.body.toString('utf8');
+  const links = new Set<string>();
   const content =
     mediaType === 'text/html' || mediaType === 'application/xhtml+xml'
       ? body
           .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+          .replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_anchor, attrs: string, label: string) => {
+            const href = /\shref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i.exec(attrs);
+            const target =
+              href && URL.parse((href[1] ?? href[2] ?? href[3]!).replaceAll('&amp;', '&'), url);
+            if (
+              !target ||
+              target.origin !== url.origin ||
+              target.username ||
+              target.password ||
+              !label.replace(/<[^>]+>/g, '').trim()
+            )
+              return label;
+            target.hash = '';
+            if (
+              target.href === url.href ||
+              target.href.length > 400 ||
+              links.has(target.href) ||
+              links.size >= 48
+            )
+              return label;
+            links.add(target.href);
+            return label + ' (' + target.href + ') ';
+          })
           .replace(/<[^>]+>/g, ' ')
           .replace(
             /&(?:nbsp|amp|lt|gt|quot);/g,

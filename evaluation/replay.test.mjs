@@ -117,11 +117,7 @@ test('pond replay groups bursts, preserves previous replies, and passes the same
 });
 
 test('wait and end are distinct and ambient chatter after ending costs zero calls', async (t) => {
-  let n = 0;
-  const deps = await endpoint(
-    t,
-    () => [{ action: 'chat_wait' }, '接到你的补充', { action: 'chat_end' }][n++],
-  );
+  const deps = await endpoint(t, () => '接到你的补充');
   const [s] = await readReplayCases('unfinished-voice');
   const variant = await runReplay(s, 'current', deps);
   assert.ok(variant.complete, JSON.stringify(variant.errors));
@@ -133,12 +129,21 @@ test('wait and end are distinct and ambient chatter after ending costs zero call
     variant.turns.map((t) => t.structuralMatch),
     [true, true, true, true],
   );
-  assert.equal(deps.requests.length, 3);
+  assert.deepEqual(
+    variant.turns.map((t) => t.modelCalls),
+    [0, 1, 0, 0],
+  );
+  assert.deepEqual(
+    variant.turns.map((t) => t.decisionSource),
+    ['user', undefined, 'user', 'routing'],
+  );
+  assert.ok(JSON.stringify(deps.requests[0].messages).includes('我还没说完'));
+  assert.equal(deps.requests.length, 1);
 });
 
 test('HTTP failure never counts as silence, never retries and stops the case', async (t) => {
   const deps = await endpoint(t, () => 503);
-  const [scenario] = await readReplayCases('unfinished-voice');
+  const [scenario] = await readReplayCases('wrong-date');
   const result = await runReplay(scenario, 'current', deps);
   assert.equal(result.complete, false);
   assert.equal(result.turns.length, 1);

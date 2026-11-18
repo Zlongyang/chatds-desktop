@@ -237,8 +237,12 @@ export async function runReplay(scenario, variant, { profile, model, takeCall, p
           }
         }
         if (step.events.some((e) => e.role === 'assistant')) step.action = 'reply';
-        else if (!step.modelCalls) step.action = 'ignored';
-        else {
+        else if (!step.modelCalls) {
+          const last = store.contextRuns(room).at(-1);
+          const requested = last?.sources.some((id) => inputIds.has(id)) && last.userDecision;
+          step.action = requested || 'ignored';
+          step.decisionSource = requested ? 'user' : 'routing';
+        } else {
           const last = store.contextRuns(room).at(-1);
           if (!last?.sources.some((id) => inputIds.has(id)))
             throw new Error('模型回合缺少完成记录');

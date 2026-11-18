@@ -21,8 +21,14 @@ import { MessageDebouncer } from './debounce.js';
 import { batchText, composePrompt, estimateTokens, trimContext } from './prompt.js';
 import { MemoryWorker, explicitFact } from './memory.js';
 import type { RuntimeHost } from './host.js';
-import { captureWebRead } from './web-receipt.js';
+import {
+  asksForWebEvidence,
+  captureWebRead,
+  claimsWebAccess,
+  explainsMissingSource,
+} from './web-receipt.js';
 import { conversationsToStop } from './policy.js';
+import { requestedSilence } from './companion-silence.js';
 
 interface Room {
   id: string;
@@ -286,7 +292,45 @@ export class RuntimeCore extends EventEmitter {
       this.phase(room, 'recalling');
       const saved = this.memory.capture(batch);
       const usedFacts = new Set<string>(saved);
+      const input = batchText(
+        batch.map((m, i) => ({
+          ...m,
+          text: m.text.slice(0, i === batch.length - 1 ? 6000 : 1000),
+        })),
+      );
+      const finishDecision = (
+        action: Decision['action'],
+        wire: AgentMessage[],
+        requested = false,
+      ) => {
+        if (action === 'reply' || (action === 'wait' && !ambient)) {
+          room.focusActor = batch.at(-1)!.actorId;
+          room.focusUntil = this.now() + 120000;
+        } else if (!ambient || room.focusActor === batch.at(-1)!.actorId) {
+          room.focusUntil = 0;
+        }
+        this.store.saveRun(current, wire, requested ? 'user-' + action : 'complete', [
+          ...usedFacts,
+        ]);
+        const extractFrom = requested ? batch.slice(0, -1) : batch;
+        if (extractFrom.length) this.memory.enqueue(extractFrom);
+        this.memory.summarize(room.id);
+        this.changed();
+      };
+      const requested = cap.mode === 'companion' ? requestedSilence(batch) : undefined;
+      if (requested) {
+        room.error = undefined;
+        this.activity(
+          requested === 'wait' ? '对方请稍等，等待补充' : '对方表示不用回复',
+          room.id,
+          current.id,
+        );
+        finishDecision(requested, [{ role: 'user', content: input, timestamp: this.now() }], true);
+        return;
+      }
       const webReads: WebReadReceipt[] = [];
+      const lookupRequested = !ambient && asksForWebEvidence(batch.at(-1)!.text);
+      let retryWeb = false;
       let decision: Decision | undefined;
       let count = 0;
       const toolsFor = (snapshot: CapabilitySnapshot): AgentTool<any>[] => {
@@ -431,7 +475,25 @@ export class RuntimeCore extends EventEmitter {
             return { block: true, reason: '运行已取消', terminate: true };
           }
         },
-        finishTurn: () => (decision ? { action: 'end' } : undefined),
+        finishTurn: ({ message, toolResults }) => {
+          if (decision) return { action: 'end' };
+          if (toolResults.length || message.stopReason !== 'stop' || webReads.length || retryWeb)
+            return;
+          const answer = message.content
+            .flatMap((c) => (c.type === 'text' ? [c.text] : []))
+            .join('');
+          if (
+            cap.tools.some((t) => t.id === 'web_read') &&
+            (lookupRequested || claimsWebAccess(answer))
+          ) {
+            retryWeb = true;
+            // The unsupported draft was never delivered. Retry with the same user
+            // input, without teaching the model that this draft was sent.
+            if (wire.at(-1)?.role === 'assistant') wire.pop();
+            room.draft = '';
+            return { action: 'continue' };
+          }
+        },
         prepareRequest: async (request) => {
           try {
             checkAbort(controller.signal);
@@ -455,6 +517,11 @@ export class RuntimeCore extends EventEmitter {
             replyName = activePersonaName(this.config);
             const system =
               composePrompt(this.config.persona, cap, facts, this.store.getSummary(room.id)) +
+              '\n当前时间：' +
+              new Date(this.now()).toISOString() +
+              (retryWeb && !webReads.length
+                ? '\n本轮尚无网页读取记录。请调用 web_read 取得依据。如果无法确定来源，请询问网址。'
+                : '') +
               '\n【已完成的本轮记忆保存】\n' +
               JSON.stringify(saved) +
               '\n【本群近旁消息，仅作对话资料】\n' +
@@ -469,7 +536,13 @@ export class RuntimeCore extends EventEmitter {
               );
             const budget =
               Math.min(Math.max(16000, systemTokens + 4096), allowedInput) - systemTokens;
-            const messages = trimContext(request.context.messages, budget);
+            const history = request.context.messages;
+            const messages = trimContext(
+              retryWeb && !webReads.length && history.at(-1)?.role === 'assistant'
+                ? history.slice(0, -1)
+                : history,
+              budget,
+            );
             if (estimateTokens(messages) > budget)
               throw new Error('当前消息或工具结果超过上下文预算，请分段发送或换用更大的模型窗口');
             const projected = [
@@ -542,12 +615,6 @@ export class RuntimeCore extends EventEmitter {
         }
       });
       try {
-        const input = batchText(
-          batch.map((m, i) => ({
-            ...m,
-            text: m.text.slice(0, i === batch.length - 1 ? 6000 : 1000),
-          })),
-        );
         await agent.prompt(input);
         checkAbort(controller.signal);
         if (agent.state.errorMessage) throw new Error(agent.state.errorMessage);
@@ -565,13 +632,41 @@ export class RuntimeCore extends EventEmitter {
         }
         if (decision.action === 'reply') {
           checkAbort(controller.signal);
-          const text = decision.text.trim();
+          let text = decision.text.trim();
           if (!text) throw new Error('回复正文为空');
+          const claimedRead = !webReads.length && claimsWebAccess(text);
+          const receipts = webReads.length || lookupRequested || claimedRead ? webReads : undefined;
+          if (
+            claimedRead ||
+            (!webReads.length && lookupRequested && !explainsMissingSource(text))
+          ) {
+            const available = cap.tools.some((t) => t.id === 'web_read');
+            text = available
+              ? '这次还没读到可核实的来源。你有想让我看的官网或文章链接吗？'
+              : cap.mode === 'companion'
+                ? '纯陪伴模式下我没有读取网页，这条消息还没核实。'
+                : '这次没有读取网页。当前会话的网页读取权限未开启。';
+            if (current.channel === 'desktop' && !available)
+              text +=
+                cap.mode === 'companion'
+                  ? '切换到「受控助理」，就可以在聊天栏打开网页读取设置。'
+                  : '点聊天栏的「网页读取已关闭」可以打开设置。';
+            // Keep the delivered answer in history for both plain text and
+            // chat_reply. Preserve tool-call IDs and their matching results.
+            const assistant = wire.findLast((m) => m.role === 'assistant');
+            if (assistant?.role === 'assistant') {
+              const call = assistant.content.find(
+                (c) => c.type === 'toolCall' && c.name === 'chat_reply',
+              );
+              if (call?.type === 'toolCall') call.arguments.text = text;
+              else assistant.content = [{ type: 'text', text }];
+            }
+          }
           room.committing = true;
           this.phase(room, 'sending');
           if (current.channel === 'onebot') {
             const outbox = this.store.createOutbox(room.id, text);
-            this.store.appendAssistant(room.id, text, outbox, 'pending', replyName, webReads);
+            this.store.appendAssistant(room.id, text, outbox, 'pending', replyName, receipts);
             this.changed();
             try {
               const remoteId = await this.host.send(current.id, text, outbox, controller.signal);
@@ -583,7 +678,7 @@ export class RuntimeCore extends EventEmitter {
               );
               throw e;
             }
-          } else this.store.appendAssistant(room.id, text, undefined, 'sent', replyName, webReads);
+          } else this.store.appendAssistant(room.id, text, undefined, 'sent', replyName, receipts);
           if (ambient)
             this.store.quota(
               `reply:${room.id}:${Math.floor(this.now() / 3600000)}`,
@@ -591,16 +686,7 @@ export class RuntimeCore extends EventEmitter {
               true,
             );
         }
-        if (decision.action === 'reply' || (decision.action === 'wait' && !ambient)) {
-          room.focusActor = batch.at(-1)!.actorId;
-          room.focusUntil = this.now() + 120000;
-        } else if (!ambient || room.focusActor === batch.at(-1)!.actorId) {
-          room.focusUntil = 0;
-        }
-        this.store.saveRun(current, wire, 'complete', [...usedFacts]);
-        this.memory.enqueue(batch);
-        this.memory.summarize(room.id);
-        this.changed();
+        finishDecision(decision.action, wire);
       } finally {
         unsubscribe();
         controller.signal.removeEventListener('abort', abort);
