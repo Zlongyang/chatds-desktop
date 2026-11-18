@@ -153,8 +153,16 @@ const defaultCard = () =>
 const tab = (id) => click('[data-persona-tab="' + id + '"]');
 const confirm = async (accept) => {
   await visible('#persona-confirm[open]');
-  await click(accept ? '#persona-confirm-action' : '#persona-confirm [value="back"]');
-  await waitFor(() => !document.querySelector('#persona-confirm').open, 'dialog closed');
+  await evaluate((accepted) => {
+    const dialog = document.querySelector('#persona-confirm');
+    const button = dialog.querySelector(accepted ? '#persona-confirm-action' : '[value="back"]');
+    return new Promise((resolve) => {
+      dialog.addEventListener('close', () => requestAnimationFrame(() => resolve(true)), {
+        once: true,
+      });
+      button.click();
+    });
+  }, accept);
 };
 async function topShot(name) {
   await evaluate(() => window.scrollTo(0, 0));
@@ -212,7 +220,11 @@ try {
   await fill('#persona-name', '未保存的名字');
   await click('#revert-persona');
   await confirm(true);
-  assert.equal(await evaluate(() => document.querySelector('#persona-name').value), card.name);
+  await waitFor(
+    (expected) => document.querySelector('#persona-name').value === expected,
+    'discarded name edit',
+    card.name,
+  );
   await click('#apply-persona');
   await textAt('#persona-role', '默认角色');
   assert.equal(await defaultCard(), card.name);
