@@ -84,6 +84,17 @@ function Click-Widget($Item) {
     if (!$Item -or $Item.Current.ProcessId -ne $setup.Id -or !$Item.Current.IsEnabled) { throw 'The requested button is unavailable in the owned installer process.' }
     if (![ChatDSWizardNative]::PostMessage([IntPtr]$Item.Current.NativeWindowHandle,0xf5,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Installer button click failed.' }
 }
+function Invoke-WizardButton($Root, [int]$Id) {
+    $button = Get-Button $Root $Id
+    if (!$button -or $Root.Current.ProcessId -ne $setup.Id -or $button.Current.ProcessId -ne $setup.Id) {
+        throw "The visible wizard button $Id is unavailable in the owned installer."
+    }
+    # The wizard runs in the background. BM_CLICK on its inactive default button can
+    # return success without navigating. Deliver the button's normal BN_CLICKED
+    # notification to its own parent, which still executes the NSIS page callbacks.
+    $posted = [ChatDSWizardNative]::PostMessage([IntPtr]$Root.Current.NativeWindowHandle,0x111,[IntPtr]$Id,[IntPtr]$button.Current.NativeWindowHandle)
+    if (!$posted) { throw "The installer did not receive wizard button $Id." }
+}
 function Checked($Item) {
     return [ChatDSWizardNative]::SendMessage([IntPtr]$Item.Current.NativeWindowHandle,0xf0,[IntPtr]::Zero,[IntPtr]::Zero) -eq [IntPtr]1
 }
@@ -95,7 +106,7 @@ function Go-ToNapCat($Root) {
         if (!$next -or $next.Current.Name -notmatch 'Next|下一步') {
             throw "No safe pre-install Next button was found (button label '$($next.Current.Name)')."
         }
-        Click-Widget $next
+        Invoke-WizardButton $Root 1
         Start-Sleep -Milliseconds 350
     }
     throw 'The normal QQ setup page was not reached.'
@@ -110,7 +121,7 @@ function Select-Fixture($Root, [string]$Folder) {
     if ([ChatDSWizardNative]::Text([IntPtr]$edit.Current.NativeWindowHandle) -cne $Folder) { throw 'The selected folder was not retained in the visible input.' }
 }
 function Cancel-Wizard($Root) {
-    Click-Widget (Get-Button $Root 2)
+    Invoke-WizardButton $Root 2
     $pidCondition = New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty,$setup.Id)
     $null = Await-Result {
         if ($setup.HasExited) { return $true }
@@ -118,7 +129,7 @@ function Cancel-Wizard($Root) {
         foreach ($window in $windows) {
             if ($window.Current.NativeWindowHandle -eq $Root.Current.NativeWindowHandle) { continue }
             $yes = Get-Button $window 6
-            if ($yes) { Click-Widget $yes }
+            if ($yes) { Invoke-WizardButton $window 6 }
         }
         return $setup.HasExited
     } 'installer cancellation'
@@ -146,7 +157,7 @@ try {
     $download = Find-Widget $root 'RadioButton' '由 ChatDS 下载'
     if (!$download -or !(Checked $download)) { throw 'First entry did not default to the documented download option.' }
     Select-Fixture $root $fixture
-    Click-Widget (Get-Button $root 3)
+    Invoke-WizardButton $root 3
     $null = Await-Result { !(Find-Widget $root 'RadioButton' '使用已经安装的 NapCat') } 'previous page'
     Go-ToNapCat $root
     $radio = Find-Widget $root 'RadioButton' '使用已经安装的 NapCat'
@@ -160,12 +171,13 @@ try {
         Write-Output 'NSIS preview passed: default download, existing-directory selection, Back/Next persistence, cancellation before installation.'
         return
     }
-    Click-Widget (Get-Button $root 1)
+    Invoke-WizardButton $root 1
     $ini = Join-Path $userData 'napcat-setup.ini'
-    $null = Await-Result { (Test-Path -LiteralPath $ini -PathType Leaf) -and (Find-Widget $root 'CheckBox' 'ChatDS') } 'installation and optional app launch' 150
+    $null = Await-Result { Test-Path -LiteralPath $ini -PathType Leaf } 'the installed NapCat choice file' 150
+    $null = Await-Result { Find-Widget $root 'CheckBox' 'ChatDS' } 'the finish-page app-launch checkbox'
     $run = Find-Widget $root 'CheckBox' 'ChatDS'
     if (Checked $run) { Click-Widget $run; $null = Await-Result { !(Checked $run) } 'cleared automatic launch' }
-    Click-Widget (Get-Button $root 1)
+    Invoke-WizardButton $root 1
     if (!$setup.WaitForExit(15000) -or $setup.ExitCode -ne 0) { throw 'Interactive installer did not finish successfully.' }
     $expected = "[NapCat]`r`naction=directory`r`ndirectory=$fixture`r`n"
     if ([IO.File]::ReadAllText($ini) -cne $expected) { throw 'Installed INI has an incorrect action, folder or Unicode encoding.' }
@@ -197,6 +209,12 @@ try {
     try { $nodeCheck | node --input-type=module - $scratch $archiveMain $fixture; if ($LASTEXITCODE -ne 0) {throw 'Installed first-launch NapCat handoff failed.'} }
     finally { Pop-Location }
     Write-Output 'Interactive NSIS installation, Unicode INI, isolated first launch and harmless selected launcher passed.'
+} catch {
+    if ($env:GITHUB_ACTIONS -eq 'true') {
+        $detail = $_.Exception.Message.Replace('%','%25').Replace([string][char]13,'%0D').Replace([string][char]10,'%0A')
+        Write-Host "::error title=Windows installer acceptance::$detail"
+    }
+    throw
 } finally {
     if ($setup -and !$setup.HasExited) { $setup.Kill(); $setup.WaitForExit(10000) | Out-Null }
     $actual = (Resolve-Path -LiteralPath $scratch).Path
