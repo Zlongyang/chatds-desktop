@@ -273,6 +273,9 @@ test(
     await writeFile(join(root, 'napcat.bat'), '@echo off\r\necho fixture>started.txt\r\n');
     const store = new NapCatInstallation(join(dir, 'profile'), {
       ...offline,
+      running: async () => {
+        throw new Error('PowerShell process enumeration is disabled');
+      },
       startConsole: undefined,
     });
     await store.select(root);
@@ -282,3 +285,40 @@ test(
     assert.equal((await readFile(marker, 'utf8')).trim(), 'fixture');
   },
 );
+
+test('restricted Windows process enumeration uses the recorded live PID and still rechecks the WebUI port', async (t) => {
+  const dir = temporary();
+  t.after(() => removeTemporary(dir));
+  const root = join(dir, 'selection'),
+    profile = join(dir, 'profile');
+  await mkdir(root);
+  await mkdir(profile);
+  await writeFile(join(root, 'QQ.exe'), 'fixture');
+  await writeFile(join(root, 'napcat.bat'), '@echo off');
+  const canonical = await realpath(root);
+  await writeFile(
+    join(profile, 'napcat-installation.json'),
+    JSON.stringify({
+      directory: canonical,
+      launcherPid: process.pid,
+      launchedAt: Date.now() - 60000,
+    }),
+  );
+  const restricted = {
+    ...offline,
+    running: async () => {
+      throw new Error('Windows PowerShell unavailable');
+    },
+  };
+  const restored = new NapCatInstallation(profile, restricted);
+  assert.equal((await restored.ensureStarted()).status, 'starting');
+  await restored.clear();
+  let probes = 0;
+  const occupiedDuringPreflight = new NapCatInstallation(profile, {
+    ...restricted,
+    portInUse: async () => ++probes === 3,
+  });
+  assert.equal((await occupiedDuringPreflight.select(root)).status, 'ready');
+  assert.equal((await occupiedDuringPreflight.ensureStarted()).status, 'port-in-use');
+  assert.equal(probes, 3);
+});

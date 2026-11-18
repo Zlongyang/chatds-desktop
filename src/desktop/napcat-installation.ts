@@ -2,7 +2,7 @@ import { execFile, spawn, type SpawnOptions } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { lstat, open, opendir, realpath } from 'node:fs/promises';
 import { createConnection } from 'node:net';
-import { release } from 'node:os';
+import { release, uptime } from 'node:os';
 import { basename, dirname, isAbsolute, join, win32 } from 'node:path';
 import { promisify } from 'node:util';
 import { atomicJson, readJson } from '../shared/util.js';
@@ -146,13 +146,43 @@ async function windowsQuery(script: string): Promise<string> {
 }
 async function registeredQQ(): Promise<boolean> {
   // Match the uninstall entry used by the upstream non-elevated Windows launchers.
+  const env = launcherEnvironment();
+  const registry = win32.join(env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+  const key = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QQ';
+  try {
+    const { stdout } = await runFile(registry, ['query', key, '/v', 'UninstallString', '/reg:32'], {
+      env,
+      windowsHide: true,
+      timeout: 4000,
+      maxBuffer: 64 * 1024,
+      encoding: 'buffer',
+    });
+    const output = stdout.toString('utf8');
+    const value = /^\s*UninstallString\s+REG_(?:EXPAND_)?SZ\s+(.+)$/im.exec(output)?.[1]?.trim();
+    if (value && !value.includes('\uFFFD') && (await qqNextToUninstaller(value))) return true;
+    // reg.exe may encode non-ASCII installation paths in the Windows OEM code page.
+  } catch (error) {
+    if ((error as { code?: number | string }).code === 1) return false;
+  }
   const uninstall = await windowsQuery(
     "$ErrorActionPreference = 'Stop'; $key = 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\QQ'; " +
       'if (Test-Path -LiteralPath $key) {(Get-ItemProperty -LiteralPath $key).UninstallString}',
   );
+  return qqNextToUninstaller(uninstall);
+}
+async function qqNextToUninstaller(uninstall: string): Promise<boolean> {
   const path =
     /^"([^"]+\.exe)"(?:\s|$)/i.exec(uninstall)?.[1] ?? /^(.+?\.exe)(?:\s|$)/i.exec(uninstall)?.[1];
   return !!path && win32.isAbsolute(path) && file(win32.dirname(path), 'QQ.exe');
+}
+function recordedLauncherAlive(saved: SavedInstallation): boolean {
+  if (!saved.launcherPid || saved.launchedAt <= Date.now() - uptime() * 1000) return false;
+  try {
+    process.kill(saved.launcherPid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 async function installationProcess(directory: string, saved: SavedInstallation): Promise<boolean> {
   // Only image paths are used. Neither process arguments nor account data are requested.
@@ -379,7 +409,13 @@ export class NapCatInstallation {
           );
       }
       const saved = this.saved?.directory === directory ? this.saved : { directory, launchedAt: 0 };
-      if (await (this.host.running ?? installationProcess)(directory, saved))
+      // Process enumeration is supplementary on restricted Windows installations.
+      // A live recorded launcher, the grace period, and the two WebUI socket checks
+      // still protect startup when PowerShell is unavailable or its probe times out.
+      const running = await (this.host.running ?? installationProcess)(directory, saved).catch(() =>
+        recordedLauncherAlive(saved),
+      );
+      if (running)
         return withStatus(
           state,
           'starting',
